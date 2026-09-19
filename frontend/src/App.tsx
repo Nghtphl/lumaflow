@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Component, useEffect, useMemo, useRef, useState } from "react";
+import type { ErrorInfo, ReactNode } from "react";
 import {
   Activity,
   ArrowDown,
@@ -107,6 +108,16 @@ const lifecycleLabels = [
 const shortAddress = (value: string, start = 6, end = 5): string =>
   value ? `${value.slice(0, start)}…${value.slice(-end)}` : "—";
 
+const safeTime = (value: unknown): string => {
+  try {
+    const date = new Date(value as string);
+    if (Number.isNaN(date.getTime())) return "—";
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "—";
+  }
+};
+
 const safeMessage = (value: unknown): string => {
   if (typeof value === "string") return value;
   if (value instanceof Error) return value.message;
@@ -197,7 +208,80 @@ async function waitForTransaction(hash: string): Promise<RawTransactionStatus> {
   throw new Error(`Ledger confirmation timed out: ${hash}`);
 }
 
-export default function App() {
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    // Surface the crash to the console for diagnostics without taking the
+    // whole terminal down to a black screen.
+    console.error("TriggerVault terminal render error:", error, info);
+  }
+
+  handleReset = (): void => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  handleReload = (): void => {
+    window.location.reload();
+  };
+
+  render(): ReactNode {
+    if (!this.state.hasError) return this.props.children;
+    return (
+      <div className="grid min-h-screen place-items-center bg-zinc-950 px-4 text-slate-200 selection:bg-cyan-500/30">
+        <div className="w-full max-w-md border border-rose-500/40 bg-slate-950 shadow-2xl shadow-rose-950/40">
+          <div className="flex items-center gap-3 border-b border-rose-500/30 px-5 py-4">
+            <div className="grid h-9 w-9 place-items-center border border-rose-500/40 bg-rose-500/10">
+              <Terminal className="h-5 w-5 text-rose-400" />
+            </div>
+            <div>
+              <h1 className="text-sm font-semibold tracking-wide text-white">TERMINAL HATASI</h1>
+              <p className="font-mono text-[10px] text-slate-500">RENDER EXECUTION HALTED</p>
+            </div>
+          </div>
+          <div className="px-5 py-5">
+            <p className="text-xs leading-relaxed text-slate-400">
+              Beklenmedik bir hata terminal arayüzünü durdurdu. Cüzdan oturumunuz ve
+              zincir üzerindeki emirleriniz etkilenmedi. Terminali yeniden başlatarak
+              devam edebilirsiniz.
+            </p>
+            {this.state.error && (
+              <pre className="mt-3 max-h-32 overflow-auto border border-slate-800 bg-zinc-950 p-3 font-mono text-[10px] leading-relaxed text-rose-300">
+                {safeMessage(this.state.error)}
+              </pre>
+            )}
+            <div className="mt-5 flex gap-2">
+              <button
+                onClick={this.handleReset}
+                className="flex flex-1 items-center justify-center gap-2 bg-cyan-500 py-3 text-xs font-bold tracking-wide text-slate-950 hover:bg-cyan-400"
+              >
+                <RefreshCw className="h-4 w-4" />
+                TERMİNALİ YENİDEN BAŞLAT
+              </button>
+              <button
+                onClick={this.handleReload}
+                className="flex items-center justify-center gap-2 border border-slate-700 bg-slate-900 px-4 py-3 font-mono text-[10px] text-slate-400 hover:text-white"
+              >
+                HARD RELOAD
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
+function App() {
   const [walletAddress, setWalletAddress] = useState("");
   const [walletConnecting, setWalletConnecting] = useState(false);
   const [walletBalance, setWalletBalance] = useState(0);
@@ -262,20 +346,29 @@ export default function App() {
     ? rawEffectivePrice
     : 0;
 
+  const safeOrders = useMemo(
+    () =>
+      (Array.isArray(orders) ? orders : []).filter(
+        (order): order is OrderItem =>
+          Boolean(order) && typeof order === "object",
+      ),
+    [orders],
+  );
+
   const visibleOrders = useMemo(
     () =>
-      orders.filter((order) =>
+      safeOrders.filter((order) =>
         tab === "active" ? order.status === "Active" : order.status !== "Active",
       ),
-    [orders, tab],
+    [safeOrders, tab],
   );
 
   const activeValue = useMemo(
     () =>
-      orders
+      safeOrders
         .filter((order) => order.status === "Active")
-        .reduce((total, order) => total + order.amountIn, 0),
-    [orders],
+        .reduce((total, order) => total + (Number(order.amountIn) || 0), 0),
+    [safeOrders],
   );
 
   const fetchOrders = async (): Promise<void> => {
@@ -359,6 +452,10 @@ export default function App() {
   };
 
   const refreshChain = async (): Promise<void> => {
+    // Freeze background polling while a wallet operation is in flight so the
+    // Freighter approval window and in-progress transaction state cannot be
+    // clobbered by a racing fetchOrders / fetchTelemetry update.
+    if (operationLock.current) return;
     setRefreshing(true);
     setMessage("");
     try {
@@ -642,6 +739,9 @@ export default function App() {
         showNotice("error", "Order failed", detail);
       }
     } finally {
+      // Never leave the terminal locked in a perpetual "running" state, even if
+      // Freighter is closed/rejected or an unexpected error escapes above.
+      setLifecycle((current) => (current === "running" ? "error" : current));
       operationLock.current = false;
     }
   };
@@ -675,6 +775,9 @@ export default function App() {
         showNotice("error", "Cancellation failed", detail);
       }
     } finally {
+      // Never leave the terminal locked in a perpetual "running" state, even if
+      // Freighter is closed/rejected or an unexpected error escapes above.
+      setLifecycle((current) => (current === "running" ? "error" : current));
       operationLock.current = false;
     }
   };
@@ -708,7 +811,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {walletAddress && <span className="hidden font-mono text-[10px] text-slate-500 sm:inline">BAL {walletBalance.toFixed(4)} XLM</span>}
+            {walletAddress && <span className="hidden font-mono text-[10px] text-slate-500 sm:inline">BAL {(Number(walletBalance) || 0).toFixed(4)} XLM</span>}
             {walletAddress ? (
               <div className="flex items-stretch border border-slate-700 bg-slate-900">
                 <div className="flex items-center gap-2 px-3 py-2 font-mono text-xs text-slate-200">
@@ -732,7 +835,7 @@ export default function App() {
         <div className="mx-auto grid max-w-[1600px] grid-cols-2 divide-x divide-slate-800 border-x border-slate-800 md:grid-cols-4">
           <TelemetryCell label="RPC LATENCY" value={telemetry.latency === null ? "—" : `${telemetry.latency} ms`} icon={<Activity className="h-3.5 w-3.5" />} healthy={telemetry.healthy} />
           <TelemetryCell label="LATEST LEDGER" value={telemetry.ledger?.toLocaleString() || "—"} icon={<Gauge className="h-3.5 w-3.5" />} />
-          <TelemetryCell label="ACTIVE VAULT VALUE" value={`${activeValue.toFixed(4)} XLM`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
+          <TelemetryCell label="ACTIVE VAULT VALUE" value={`${(Number(activeValue) || 0).toFixed(4)} XLM`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
           <div className="flex min-w-0 items-center justify-between gap-2 px-4 py-3">
             <div className="min-w-0">
               <p className="text-[9px] uppercase tracking-widest text-slate-500">Contract</p>
@@ -747,19 +850,19 @@ export default function App() {
         <section className="border-b border-slate-800 bg-slate-950 p-4 lg:min-h-[calc(100vh-130px)] lg:border-b-0 lg:border-r">
           <div className="mb-5 flex items-center justify-between">
             <div><h2 className="text-sm font-semibold text-white">Vault Order Placement</h2><p className="mt-1 text-[11px] text-slate-500">Slippage-bounded autonomous execution</p></div>
-            <span className="font-mono text-[10px] text-slate-500">BAL {walletBalance.toFixed(4)} XLM</span>
+            <span className="font-mono text-[10px] text-slate-500">BAL {(Number(walletBalance) || 0).toFixed(4)} XLM</span>
           </div>
 
           <form onSubmit={submitOrder} className="space-y-4">
-            <Field label="INPUT COLLATERAL" suffix="XLM" value={amountIn} onChange={setAmountIn} />
+            <Field label="INPUT COLLATERAL" suffix="XLM" value={amountIn} onChange={setAmountIn} disabled={lifecycle === "running"} />
             <div className="grid grid-cols-4 gap-1.5">{[25, 50, 75, 100].map((percentage) => <button key={percentage} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="border border-slate-800 bg-zinc-950 py-1.5 font-mono text-[10px] text-slate-400 hover:border-cyan-500/50 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40">{percentage}%</button>)}</div>
             <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-slate-600" /></div>
-            <Field label="MINIMUM OUTPUT" suffix="USDC" value={minAmountOut} onChange={setMinAmountOut} />
+            <Field label="MINIMUM OUTPUT" suffix="USDC" value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} />
             <div>
               <div className="mb-2 flex items-center justify-between"><label className="text-[10px] font-medium tracking-widest text-slate-500">SLIPPAGE TOLERANCE</label><span className="font-mono text-xs text-cyan-400">{slippage.toFixed(1)}%</span></div>
               <div className="grid grid-cols-3 gap-1.5">{[0.1, 0.5, 1].map((value) => <button key={value} type="button" disabled={lifecycle === "running"} onClick={() => setSlippage(value)} className={`border py-2 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-40 ${slippage === value ? "border-cyan-500 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-zinc-950 text-slate-400"}`}>{value.toFixed(1)}%</button>)}</div>
             </div>
-            <Field label="KEEPER BOUNTY" suffix="BPS" value={feeBps} onChange={setFeeBps} />
+            <Field label="KEEPER BOUNTY" suffix="BPS" value={feeBps} onChange={setFeeBps} disabled={lifecycle === "running"} />
 
             <div className="border border-slate-800 bg-zinc-950 p-3 font-mono text-[11px]">
               <Breakdown label="Input collateral" value={`${numericAmount.toFixed(7)} XLM`} />
@@ -791,7 +894,7 @@ export default function App() {
           <div className="overflow-x-auto">
             <table className="w-full min-w-[820px] text-left">
               <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[9px] uppercase tracking-wider text-slate-500"><tr><th className="px-4 py-3">Order</th><th className="px-4 py-3">Owner</th><th className="px-4 py-3 text-right">Collateral</th><th className="px-4 py-3 text-right">Min Output</th><th className="px-4 py-3 text-right">Bounty</th><th className="px-4 py-3">Created</th><th className="px-4 py-3 text-right">Action</th></tr></thead>
-              <tbody className="divide-y divide-slate-800/80">{visibleOrders.map((order) => <tr key={order.id} className="font-mono text-xs hover:bg-slate-900/60"><td className="px-4 py-3 text-cyan-400">#{order.id}</td><td className="px-4 py-3 text-slate-400">{shortAddress(order.owner)}</td><td className="px-4 py-3 text-right text-white">{order.amountIn.toFixed(4)} XLM</td><td className="px-4 py-3 text-right text-slate-300">≥ {order.minAmountOut.toFixed(4)} USDC</td><td className="px-4 py-3 text-right text-amber-300">{(order.feeBps / 100).toFixed(2)}%</td><td className="px-4 py-3 text-slate-500">{new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td><td className="px-4 py-3 text-right">{order.status === "Active" && order.owner === walletAddress ? <button disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3 w-3" />CANCEL & RECLAIM</button> : <span className="text-slate-600">{order.status.toUpperCase()}</span>}</td></tr>)}</tbody>
+              <tbody className="divide-y divide-slate-800/80">{visibleOrders.map((order) => <tr key={order.id} className="font-mono text-xs hover:bg-slate-900/60"><td className="px-4 py-3 text-cyan-400">#{order.id}</td><td className="px-4 py-3 text-slate-400">{shortAddress(String(order.owner || ""))}</td><td className="px-4 py-3 text-right text-white">{(Number(order.amountIn) || 0).toFixed(4)} XLM</td><td className="px-4 py-3 text-right text-slate-300">≥ {(Number(order.minAmountOut) || 0).toFixed(4)} USDC</td><td className="px-4 py-3 text-right text-amber-300">{((Number(order.feeBps) || 0) / 100).toFixed(2)}%</td><td className="px-4 py-3 text-slate-500">{safeTime(order.createdAt)}</td><td className="px-4 py-3 text-right">{order.status === "Active" && order.owner === walletAddress ? <button disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3 w-3" />CANCEL & RECLAIM</button> : <span className="text-slate-600">{String(order.status || "").toUpperCase()}</span>}</td></tr>)}</tbody>
             </table>
             {visibleOrders.length === 0 && <div className="grid min-h-64 place-items-center border-b border-slate-800"><div className="max-w-md px-6 text-center">{tab === "history" ? <><div className="relative mx-auto mb-4 h-12 w-12"><span className="absolute inset-0 animate-ping rounded-full border border-cyan-500/30" /><span className="absolute inset-2 animate-pulse rounded-full border border-cyan-400/50 bg-cyan-500/5" /><Activity className="absolute inset-0 m-auto h-5 w-5 text-cyan-400" /></div><p className="font-mono text-xs text-slate-400">NO HISTORICAL ORDERS</p><p className="mt-2 text-[10px] leading-relaxed text-slate-600">Autonomous keeper engine is actively scanning order book for price triggers</p></> : <><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="font-mono text-xs text-slate-500">NO ACTIVE ORDERS</p><p className="mt-1 text-[10px] text-slate-700">Waiting for contract state updates</p></>}</div></div>}
           </div>
@@ -805,8 +908,8 @@ function TelemetryCell({ label, value, icon, healthy }: { label: string; value: 
   return <div className="px-4 py-3"><div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-slate-500">{icon}{label}</div><div className="flex items-center gap-2 font-mono text-xs text-slate-200">{healthy !== undefined && <span className={`h-1.5 w-1.5 rounded-full ${healthy ? "bg-emerald-400" : "bg-rose-400"}`} />}{value}</div></div>;
 }
 
-function Field({ label, suffix, value, onChange }: { label: string; suffix: string; value: string; onChange: (value: string) => void }) {
-  return <label className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className="flex border border-slate-800 bg-zinc-950 focus-within:border-cyan-500/60"><input type="text" inputMode="decimal" value={value} onChange={(event) => onChange(event.target.value.replace(",", "."))} className="min-w-0 flex-1 bg-transparent px-3 py-3 font-mono text-sm text-white outline-none" /><span className="border-l border-slate-800 px-3 py-3 font-mono text-xs text-slate-500">{suffix}</span></div></label>;
+function Field({ label, suffix, value, onChange, disabled = false }: { label: string; suffix: string; value: string; onChange: (value: string) => void; disabled?: boolean }) {
+  return <label className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className={`flex border border-slate-800 bg-zinc-950 focus-within:border-cyan-500/60 ${disabled ? "opacity-50" : ""}`}><input type="text" inputMode="decimal" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value.replace(",", "."))} className="min-w-0 flex-1 bg-transparent px-3 py-3 font-mono text-sm text-white outline-none disabled:cursor-not-allowed" /><span className="border-l border-slate-800 px-3 py-3 font-mono text-xs text-slate-500">{suffix}</span></div></label>;
 }
 
 function Breakdown({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
@@ -841,5 +944,13 @@ function ToastNotice({ notice, onClose }: { notice: Notice; onClose: () => void 
       </div>
       <div className={`h-0.5 ${success ? "bg-emerald-400" : info ? "bg-cyan-400" : "bg-rose-400"}`} />
     </div>
+  );
+}
+
+export default function AppWithBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   );
 }
