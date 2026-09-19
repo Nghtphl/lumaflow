@@ -1,0 +1,139 @@
+/*
+ * TriggerVault — design tokens
+ * ────────────────────────────────────────────────────────────────────────────
+ * The palette is built on a strict 60 / 30 / 10 split. Every colour in the
+ * product comes from one of the three tiers below; nothing is invented inline.
+ *
+ *   60%  CANVAS      Deep, desaturated navy. Page, cards, wells, sheets.
+ *                    Carries most of the pixels and almost none of the meaning.
+ *
+ *   30%  STRUCTURE   Cool steel-grey. Hairlines, typography, chip fills,
+ *                    segmented tracks. This is what the interface is *made of*.
+ *
+ *   10%  ACCENT      A single blue. Primary actions, the active tab, the live
+ *                    value in a stat, the focus ring. Nothing else is blue, so
+ *                    blue always means "this is the thing".
+ *
+ * Semantic colours (positive / negative / warning) sit outside the split: they
+ * are functional signals, never decoration, and are deliberately muted so a
+ * settled order never shouts louder than the button you are about to press.
+ * There are no glows, no gradient fills and no coloured status dots anywhere
+ * in this file — depth comes from elevation and hairlines, not from light.
+ */
+
+@theme {
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  --font-sans:
+    "Roboto Variable", Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono:
+    "Roboto Mono Variable", "Roboto Mono", ui-monospace, SFMono-Regular,
+    "SF Mono", Menlo, monospace;
+
+  /* Apple-style type ramp: tight tracking as size grows, open tracking on
+     the small all-caps labels so they stay readable at 11px. */
+  --text-display: 2.25rem;
+  --text-display--line-height: 1.12;
+  --text-display--letter-spacing: -0.028em;
+  --text-display--font-weight: 500;
+
+  --text-title: 1.5rem;
+  --text-title--line-height: 1.2;
+  --text-title--letter-spacing: -0.021em;
+  --text-title--font-weight: 500;
+
+  --text-heading: 1.1875rem;
+  --text-heading--line-height: 1.3;
+  --text-heading--letter-spacing: -0.015em;
+  --text-heading--font-weight: 500;
+
+  --text-subhead: 0.9375rem;
+  --text-subhead--line-height: 1.4;
+  --text-subhead--letter-spacing: -0.008em;
+  --text-subhead--font-weight: 500;
+
+  --text-body: 0.875rem;
+  --text-body--line-height: 1.5;
+  --text-body--letter-spacing: -0.003em;
+
+  --text-callout: 0.8125rem;
+  --text-callout--line-height: 1.45;
+
+  --text-footnote: 0.75rem;
+  --text-footnote--line-height: 1.4;
+
+  --text-caption: 0.6875rem;
+  --text-caption--line-height: 1.3;
+  --text-caption--letter-spacing: 0.04em;
+  --text-caption--font-weight: 500;
+
+  /* ── 60% · Canvas ───────────────────────────────────────────────────── */
+  --color-canvas: #0a0d14;
+  --color-canvas-veil: #0a0d14f2;
+  --color-surface: #10151f;
+  --color-surface-2: #151b27;
+  --color-surface-3: #1b2230;
+  --color-well: #080b11;
+
+  /* ── 30% · Structure ────────────────────────────────────────────────── */
+  --color-line: #1e2533;
+  --color-line-strong: #2a3244;
+  --color-fill: #ffffff0a;
+  --color-fill-strong: #ffffff14;
+  --color-ink: #e9ecf2;
+  --color-ink-2: #a2abbc;
+  --color-ink-3: #7a8497;
+  --color-ink-4: #545d6e;
+
+  /* ── 10% · Accent ───────────────────────────────────────────────────── */
+  --color-accent: #2563eb;
+  --color-accent-hover: #3b82f6;
+  --color-accent-press: #1d4ed8;
+  --color-accent-ink: #7fa9ff;
+  --color-accent-soft: #2563eb1f;
+  --color-accent-line: #2563eb59;
+
+  /* ── Semantic · functional signals only ─────────────────────────────── */
+  --color-positive: #3fb27f;
+  --color-positive-ink: #7ad6aa;
+  --color-positive-soft: #3fb27f1f;
+  --color-negative: #e5484d;
+  --color-negative-ink: #ff9497;
+  --color-negative-soft: #e5484d1f;
+  --color-warning: #d9a441;
+  --color-warning-ink: #efc474;
+  --color-warning-soft: #d9a4411f;
+
+  /* ── Radii ──────────────────────────────────────────────────────────── */
+  --radius-xs: 6px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 26px;
+
+  /* ── Elevation · shadow only, never glow ────────────────────────────── */
+  --shadow-card: 0 1px 2px #0000006b, 0 10px 26px -14px #000000a6;
+  --shadow-pop: 0 8px 14px -8px #00000080, 0 28px 56px -20px #000000b3;
+  --shadow-modal: 0 40px 90px -28px #000000d9;
+  --shadow-inset: inset 0 1px 0 #ffffff0a;
+
+  /* ── Motion · iOS/macOS curves ──────────────────────────────────────── */
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-soft: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-overshoot: cubic-bezier(0.34, 1.4, 0.64, 1);
+
+  --animate-toast-in: toast-in 0.42s var(--ease-out-expo) both;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}

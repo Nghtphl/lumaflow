@@ -1,20 +1,21 @@
 import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import {
-  Activity,
-  ArrowDown,
-  Check,
-  Clock3,
-  ExternalLink,
-  Gauge,
-  LoaderCircle,
-  LogOut,
+  ArrowDownUp,
+  ArrowUpRight,
+  CircleAlert,
+  Coins,
+  Info,
+  Landmark,
+  ListChecks,
+  Receipt,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
-  Terminal,
-  Zap,
+  Timer,
+  TriangleAlert,
   Wallet,
-  X,
+  Zap,
 } from "lucide-react";
 import {
   getAddress as getPublicKey,
@@ -37,6 +38,29 @@ import {
   scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { cn } from "./lib/cn";
+import { ROUTES } from "./routes";
+import { LandingPage } from "./pages/LandingPage";
+import { AppBackground } from "./components/layout/AppBackground";
+import { Footer } from "./components/layout/Footer";
+import { Navbar } from "./components/layout/Navbar";
+import { WalletControl } from "./components/layout/WalletControl";
+import { AmountField } from "./components/ui/AmountField";
+import { Button, IconButton } from "./components/ui/Button";
+import { buttonStyles } from "./components/ui/buttonStyles";
+import { Card, CardHeader, SectionLabel } from "./components/ui/Card";
+import { EmptyState } from "./components/ui/EmptyState";
+import { Modal } from "./components/ui/Modal";
+import { Reveal } from "./components/ui/Reveal";
+import { SectionHeading } from "./components/ui/SectionHeading";
+import { Segmented } from "./components/ui/Segmented";
+import { Stepper } from "./components/ui/Stepper";
+import { Toast } from "./components/ui/Toast";
+import type { Notice, NoticeType } from "./components/ui/Toast";
+import { OrderCard } from "./components/vault/OrderCard";
+import { TelemetryBar } from "./components/vault/TelemetryBar";
+import { TokenSelector } from "./components/vault/TokenSelector";
 
 const CONTRACT_ID =
   import.meta.env.VITE_VAULT_CONTRACT_ID ||
@@ -59,32 +83,27 @@ const READ_ONLY_SOURCE =
   "GBICM7WA6FIVCFRCPM3ZIGNF5CZC5VRCU4IV4DJPQLWIALVQ6IN6OI6A";
 const server = new rpc.Server(RPC_URL);
 const vault = new Contract(CONTRACT_ID);
+const EXPLORER_BASE = "https://stellar.expert/explorer/testnet";
+const NETWORK_LABEL = "Stellar Testnet";
+
+const CONSOLE_SECTIONS = [
+  { id: "console", label: "Console" },
+  { id: "orders", label: "Orders" },
+] as const;
 
 type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type ActionTab = "order" | "ramp";
 type TokenSymbol = "USDC" | "XLM";
 type LifecycleState = "idle" | "running" | "complete" | "error";
-type NoticeType = "success" | "error" | "info";
 
 const TOKEN_OPTIONS: ReadonlyArray<{
   symbol: TokenSymbol;
   name: string;
-  badge: string;
-  badgeClass: string;
+  glyph: string;
 }> = [
-  {
-    symbol: "USDC",
-    name: "Circle Testnet",
-    badge: "$",
-    badgeClass: "bg-blue-500/15 text-blue-300 ring-blue-400/20",
-  },
-  {
-    symbol: "XLM",
-    name: "Stellar Lumens",
-    badge: "✦",
-    badgeClass: "bg-violet-500/15 text-violet-300 ring-violet-400/20",
-  },
+  { symbol: "USDC", name: "Circle Testnet", glyph: "$" },
+  { symbol: "XLM", name: "Stellar Lumens", glyph: "✦" },
 ];
 
 const opposingToken = (token: TokenSymbol): TokenSymbol =>
@@ -124,14 +143,6 @@ interface Telemetry {
   ledger: number | null;
   healthy: boolean;
   updatedAt: Date | null;
-}
-
-interface Notice {
-  id: number;
-  type: NoticeType;
-  title: string;
-  detail: string;
-  txHash?: string;
 }
 
 const WRONG_NETWORK_MESSAGE =
@@ -292,43 +303,38 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   render(): ReactNode {
     if (!this.state.hasError) return this.props.children;
     return (
-      <div className="grid min-h-screen place-items-center bg-zinc-950 px-4 text-slate-200 selection:bg-cyan-500/30">
-        <div className="w-full max-w-md border border-rose-500/40 bg-slate-950 shadow-2xl shadow-rose-950/40">
-          <div className="flex items-center gap-3 border-b border-rose-500/30 px-5 py-4">
-            <div className="grid h-9 w-9 place-items-center border border-rose-500/40 bg-rose-500/10">
-              <Terminal className="h-5 w-5 text-rose-400" />
-            </div>
-            <div>
-              <h1 className="text-sm font-semibold tracking-wide text-white">TERMINAL ERROR</h1>
-              <p className="font-mono text-[10px] text-slate-500">RENDER EXECUTION HALTED</p>
+      <div className="grid min-h-screen place-items-center bg-canvas px-4">
+        <div className="material w-full max-w-md rounded-xl p-6 shadow-modal">
+          <div className="flex items-start gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-md border border-negative/35 bg-negative-soft text-negative-ink">
+              <TriangleAlert className="size-5" strokeWidth={2} aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <h1 className="text-heading text-ink">The console stopped rendering</h1>
+              <p className="mt-2 text-callout leading-relaxed text-ink-2">
+                Your wallet session and on-chain orders are untouched — this is a
+                display fault only. Restarting re-mounts the interface and
+                re-reads the chain.
+              </p>
             </div>
           </div>
-          <div className="px-5 py-5">
-            <p className="text-xs leading-relaxed text-slate-400">
-              An unexpected error halted the terminal interface. Your wallet session
-              and on-chain orders are unaffected. You can restart the terminal to
-              continue.
-            </p>
-            {this.state.error && (
-              <pre className="mt-3 max-h-32 overflow-auto border border-slate-800 bg-zinc-950 p-3 font-mono text-[10px] leading-relaxed text-rose-300">
-                {safeMessage(this.state.error)}
-              </pre>
-            )}
-            <div className="mt-5 flex gap-2">
-              <button
-                onClick={this.handleReset}
-                className="flex flex-1 items-center justify-center gap-2 bg-cyan-500 py-3 text-xs font-bold tracking-wide text-slate-950 hover:bg-cyan-400"
-              >
-                <RefreshCw className="h-4 w-4" />
-                RESTART TERMINAL
-              </button>
-              <button
-                onClick={this.handleReload}
-                className="flex items-center justify-center gap-2 border border-slate-700 bg-slate-900 px-4 py-3 font-mono text-[10px] text-slate-400 hover:text-white"
-              >
-                HARD RELOAD
-              </button>
-            </div>
+
+          {this.state.error && (
+            <pre className="well mt-4 max-h-32 overflow-auto rounded-md p-3 font-mono text-caption leading-relaxed text-negative-ink">
+              {safeMessage(this.state.error)}
+            </pre>
+          )}
+
+          <div className="mt-6 flex gap-2">
+            <Button
+              variant="primary"
+              block
+              onClick={this.handleReset}
+              icon={<RotateCcw className="size-4" strokeWidth={2} aria-hidden="true" />}
+            >
+              Restart console
+            </Button>
+            <Button onClick={this.handleReload}>Hard reload</Button>
           </div>
         </div>
       </div>
@@ -353,7 +359,6 @@ function App() {
   const [amountIn, setAmountIn] = useState("10");
   const [minAmountOut, setMinAmountOut] = useState("38");
   const [feeBps, setFeeBps] = useState("100");
-  const [slippage, setSlippage] = useState(0.5);
   const [tab, setTab] = useState<OrderTab>("active");
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [telemetry, setTelemetry] = useState<Telemetry>({
@@ -371,6 +376,9 @@ function App() {
   const operationLock = useRef(false);
   const observedAt = useRef(new Map<number, string>());
   const hasLoadedOrders = useRef(false);
+
+  const location = useLocation();
+  const isConsole = location.pathname.startsWith(ROUTES.console);
 
   const showNotice = (
     type: NoticeType,
@@ -424,8 +432,9 @@ function App() {
     ? rawEffectivePrice
     : 0;
   const triggerPriceTry = effectivePrice * tryPerUsdc;
-  const selectedDepositBalance =
-    depositToken === "USDC" ? usdcBalance : walletBalance;
+  // What the user can actually commit: the XLM leg holds back one lumen for
+  // the base reserve and fees, so the figure shown is never a promise the
+  // network will refuse to keep.
   const spendableDepositBalance =
     depositToken === "XLM"
       ? Math.max(walletBalance - 1, 0)
@@ -576,13 +585,16 @@ function App() {
   };
 
   useEffect(() => {
+    // The landing page renders no chain data, so polling the RPC every ten
+    // seconds there would be pure cost — for the node as much as for us.
+    if (!isConsole) return;
     const initialRefresh = window.setTimeout(() => void refreshChain(), 0);
     const timer = window.setInterval(() => void refreshChain(), 10_000);
     return () => {
       window.clearTimeout(initialRefresh);
       window.clearInterval(timer);
     };
-  }, []);
+  }, [isConsole]);
 
   useEffect(() => {
     const watcher = new WatchWalletChanges(2_000);
@@ -690,6 +702,12 @@ function App() {
     }, 0);
     return () => window.clearTimeout(balanceRefresh);
   }, [actionTab, refreshBalances, walletAddress]);
+
+  useEffect(() => {
+    // Client-side navigation keeps the old scroll offset, which lands a fresh
+    // route halfway down itself.
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }, [location.pathname]);
 
   const connectWallet = async (): Promise<void> => {
     setMessage("");
@@ -1031,534 +1049,626 @@ function App() {
     }
   };
 
-  return (
-    <div
-      className="notranslate relative min-h-screen overflow-hidden bg-[#0B0F19] text-slate-100 antialiased selection:bg-cyan-500/30"
-      translate="no"
-    >
-      <style>{`@keyframes toast-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }`}</style>
-      <div className="pointer-events-none fixed inset-0">
-        <div className="absolute inset-x-0 top-0 h-[34rem] bg-[radial-gradient(circle_at_50%_0%,rgba(34,211,238,0.12),transparent_62%)]" />
-        <div className="absolute -left-40 -top-40 h-[34rem] w-[34rem] rounded-full bg-cyan-500/10 blur-[120px]" />
-        <div className="absolute right-[-12rem] top-1/4 h-[32rem] w-[32rem] rounded-full bg-violet-600/10 blur-[130px]" />
-        <div className="absolute bottom-[-14rem] left-1/3 h-[28rem] w-[28rem] rounded-full bg-blue-500/10 blur-[120px]" />
-      </div>
+  const busy = lifecycle === "running";
+  const connected = Boolean(walletAddress);
+  const contractUrl = `${EXPLORER_BASE}/contract/${CONTRACT_ID}`;
+  const activeCount = safeOrders.filter((order) => order.status === "Active").length;
+  const historyCount = safeOrders.length - activeCount;
+  const scrollToConsole = (): void => {
+    document
+      .getElementById("console")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
-      <div className="fixed right-4 top-20 z-50 flex w-[min(390px,calc(100vw-2rem))] flex-col gap-2">
-        {notices.map((notice) => (
-          <ToastNotice
-            key={notice.id}
-            notice={notice}
-            onClose={() =>
-              setNotices((current) => current.filter((item) => item.id !== notice.id))
-            }
-          />
-        ))}
-      </div>
-
-      <header className="relative z-20 border-b border-slate-800/70 bg-[#0B0F19]/80 backdrop-blur-xl">
-        <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-tr from-violet-600 via-purple-500 to-fuchsia-500 p-2.5 text-white shadow-lg shadow-purple-500/30">
-              <Zap className="h-5 w-5 fill-white text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2.5">
-                <h1 className="bg-gradient-to-r from-white via-purple-200 to-fuchsia-300 bg-clip-text text-base font-bold tracking-tight text-transparent">
-                  TriggerVault
-                </h1>
-                <span className="hidden rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[10px] font-medium text-sky-300 sm:inline-flex">
-                  <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-sky-400" />
-                  Stellar Testnet
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500">Non-custodial FX automation</p>
-            </div>
-          </div>
-
-          {walletAddress ? (
-            <div className="flex items-center rounded-xl border border-slate-700/80 bg-slate-900/80 p-1 shadow-lg shadow-black/20">
-              <div className="hidden px-3 sm:block">
-                <p className="text-[9px] uppercase tracking-wider text-slate-500">Balance</p>
-                <p className="text-xs font-semibold text-white">{usdcBalance.toFixed(2)} USDC</p>
-              </div>
-              <div className="flex items-center gap-2 rounded-lg bg-slate-800/80 px-3 py-2 text-xs text-slate-200">
-                <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
-                <Wallet className="h-3.5 w-3.5 text-cyan-300" />
-                <span className="font-mono">{shortAddress(walletAddress, 6, 4)}</span>
-              </div>
-              <button
-                type="button"
-                onClick={disconnectWallet}
-                className="ml-1 rounded-lg p-2 text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
-                aria-label="Disconnect wallet"
-              >
-                <LogOut className="h-4 w-4" />
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={connectWallet}
-              disabled={walletConnecting}
-              className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
-            >
-              {walletConnecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
-              <span>{walletConnecting ? "Connecting" : "Connect Freighter"}</span>
-            </button>
-          )}
-        </nav>
-      </header>
-
-      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <section className="mb-6 grid grid-cols-2 gap-3">
-          <TelemetryCell label="RPC latency" value={telemetry.latency === null ? "—" : `${telemetry.latency} ms`} icon={<Activity className="h-3.5 w-3.5" />} healthy={telemetry.healthy} />
-          <TelemetryCell label="Latest ledger" value={telemetry.ledger?.toLocaleString() || "—"} icon={<Gauge className="h-3.5 w-3.5" />} />
-          <TelemetryCell label="Active vault value" value={`${activeValue.toFixed(2)} USDC${tryPerUsdc > 0 ? ` · ${(activeValue * tryPerUsdc).toFixed(0)} TL` : ""}`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
-          <a
-            href={`https://stellar.expert/explorer/testnet/contract/${CONTRACT_ID}`}
-            target="_blank"
-            rel="noreferrer"
-            className="flex min-w-0 items-center justify-between rounded-xl border border-slate-800/80 bg-slate-900/50 px-4 py-3 backdrop-blur-xl transition hover:border-cyan-500/30 hover:bg-slate-800/60"
-          >
-            <div className="min-w-0">
-              <p className="text-[9px] uppercase tracking-widest text-slate-500">Vault contract</p>
-              <p className="mt-1 truncate font-mono text-xs text-slate-300">{shortAddress(CONTRACT_ID, 8, 6)}</p>
-            </div>
-            <ExternalLink className="h-4 w-4 shrink-0 text-cyan-400" />
-          </a>
+  const consoleView = (
+    <main className="relative mx-auto max-w-7xl px-4 pt-28 sm:px-6 lg:px-8">
+        <section aria-label="Network status">
+          <Reveal>
+            <TelemetryBar
+              latency={telemetry.latency}
+              ledger={telemetry.ledger}
+              healthy={telemetry.healthy}
+              updatedAt={telemetry.updatedAt}
+              activeValue={activeValue}
+              activeValueTry={tryPerUsdc > 0 ? activeValue * tryPerUsdc : null}
+              contractId={CONTRACT_ID}
+              contractUrl={contractUrl}
+              contractLabel={shortAddress(CONTRACT_ID, 8, 6)}
+              refreshing={refreshing}
+              onRefresh={() => void refreshChain()}
+            />
+          </Reveal>
         </section>
 
-        <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,520px)_minmax(0,1fr)]">
-          <section className="relative overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900/70 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl sm:p-5">
-            <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-950/70 p-1" role="tablist" aria-label="Vault actions">
-              {([
-                { id: "order", label: "Limit Order" },
-                { id: "ramp", label: "TRY Bank Bridge" },
-              ] as const).map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={actionTab === item.id}
-                  onClick={() => setActionTab(item.id)}
-                  className={`rounded-lg px-3 py-2.5 text-xs font-semibold transition ${
-                    actionTab === item.id
-                      ? "bg-slate-800 text-white shadow-lg shadow-black/30"
-                      : "text-slate-500 hover:text-slate-300"
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
+        {/* ── Console ─────────────────────────────────────────────────────── */}
+        <section id="console" className="scroll-mt-28 pt-20">
+          <SectionHeading
+            eyebrow="Console"
+            title="Place a trigger"
+            description="Deposit collateral into the vault, or move lira across the anchor bridge. Both legs settle on Stellar Testnet."
+          />
 
-            <div
-              className={actionTab === "ramp" ? "block" : "hidden"}
-              aria-hidden={actionTab !== "ramp"}
-            >
-              <AnchorPanel
-                walletAddress={walletAddress}
-                onRequireWallet={() => setConnectModalOpen(true)}
-                usdcBalance={usdcBalance}
-                refreshBalances={refreshBalances}
-                onRate={handleAnchorRate}
-                notify={showNotice}
-                onSettled={() => void refreshChain()}
-              />
-            </div>
-
-            <div
-              className={actionTab === "order" ? "block" : "hidden"}
-              aria-hidden={actionTab !== "order"}
-            >
-              <div>
-                <div className="mb-5 flex items-end justify-between">
-                  <div>
-                    <h2 className="text-lg font-semibold text-white">Create limit order</h2>
-                    <p className="mt-1 text-xs text-slate-500">Swap {depositToken} to {targetToken} when your target can be met.</p>
-                  </div>
-                  <span className="rounded-full bg-slate-800/80 px-3 py-1 text-[10px] text-slate-400">
-                    Balance {selectedDepositBalance.toFixed(2)} {depositToken}
-                  </span>
+          <div className="mt-8 grid items-start gap-5 lg:grid-cols-[minmax(0,34rem)_minmax(0,1fr)]">
+            <Reveal>
+              <Card flush className="relative overflow-hidden">
+                <div className="p-5 pb-0">
+                  <Segmented
+                    ariaLabel="Vault actions"
+                    value={actionTab}
+                    onChange={setActionTab}
+                    options={[
+                      {
+                        id: "order",
+                        label: "Limit order",
+                        icon: <Zap className="size-3.5" strokeWidth={2} aria-hidden="true" />,
+                      },
+                      {
+                        id: "ramp",
+                        label: "TRY bridge",
+                        icon: <Landmark className="size-3.5" strokeWidth={2} aria-hidden="true" />,
+                      },
+                    ]}
+                  />
                 </div>
 
-                <form onSubmit={submitOrder} className="space-y-3">
-                  <Field
-                    label="YOU DEPOSIT"
-                    suffix={depositToken}
-                    value={amountIn}
-                    onChange={setAmountIn}
-                    disabled={lifecycle === "running"}
-                    fiatValue={depositFiatValue}
-                    suffixNode={
-                      <TokenSelector
-                        value={depositToken}
-                        balances={tokenBalances}
-                        disabled={lifecycle === "running"}
-                        onSelect={selectDepositToken}
+                <div className="relative p-5">
+                  <div
+                    className={actionTab === "order" ? "block" : "hidden"}
+                    aria-hidden={actionTab !== "order"}
+                  >
+                    <form onSubmit={submitOrder} className="space-y-4">
+                      <AmountField
+                        label="You deposit"
+                        value={amountIn}
+                        onChange={setAmountIn}
+                        disabled={busy}
+                        hint={depositFiatValue}
+                        aside={`Spendable ${spendableDepositBalance.toFixed(2)} ${depositToken}`}
+                        unitNode={
+                          <TokenSelector
+                            options={TOKEN_OPTIONS}
+                            value={depositToken}
+                            balances={tokenBalances}
+                            disabled={busy}
+                            onSelect={selectDepositToken}
+                          />
+                        }
                       />
-                    }
-                  />
-                  <div className="grid grid-cols-3 gap-2">{[25, 50, 100].map((percentage) => <button key={percentage.toString()} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="rounded-lg border border-slate-800 bg-slate-950/50 py-2 text-[10px] font-medium text-slate-400 transition hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-40">{percentage}%</button>)}</div>
-                  <div className="relative flex h-5 justify-center">
+
+                      <div className="grid grid-cols-3 gap-2">
+                        {[25, 50, 100].map((percentage) => (
+                          <Button
+                            key={percentage}
+                            size="sm"
+                            disabled={busy}
+                            onClick={() => fillBalancePercentage(percentage)}
+                          >
+                            {percentage === 100 ? "Max" : `${percentage}%`}
+                          </Button>
+                        ))}
+                      </div>
+
+                      <div className="relative flex justify-center py-1">
+                        <span
+                          aria-hidden="true"
+                          className="rule-fade absolute inset-x-0 top-1/2 h-px -translate-y-1/2"
+                        />
+                        <IconButton
+                          label={`Switch the pair to ${targetToken} for ${depositToken}`}
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={flipPair}
+                          className="group relative z-10 rounded-full"
+                        >
+                          <ArrowDownUp
+                            className="size-3.5 transition-transform duration-400 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:rotate-180"
+                            strokeWidth={2}
+                            aria-hidden="true"
+                          />
+                        </IconButton>
+                      </div>
+
+                      <AmountField
+                        label="Minimum you accept"
+                        value={minAmountOut}
+                        onChange={setMinAmountOut}
+                        disabled={busy}
+                        hint={targetFiatValue}
+                        unitNode={
+                          <TokenSelector
+                            options={TOKEN_OPTIONS}
+                            value={targetToken}
+                            balances={tokenBalances}
+                            disabled={busy}
+                            onSelect={selectTargetToken}
+                          />
+                        }
+                      />
+
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <AmountField
+                          label="Keeper bounty"
+                          unit="BPS"
+                          value={feeBps}
+                          onChange={setFeeBps}
+                          disabled={busy}
+                          compact
+                          invalid={
+                            !Number.isInteger(numericFeeBps) ||
+                            numericFeeBps < 0 ||
+                            numericFeeBps > 1_000
+                          }
+                        />
+                        <p className="self-end pb-1 text-footnote leading-relaxed text-ink-3">
+                          Paid from realised output to whoever executes the order.
+                          Up to 1,000 BPS (10%).
+                        </p>
+                      </div>
+
+                      <Button
+                        type="submit"
+                        variant="primary"
+                        size="lg"
+                        block
+                        loading={busy}
+                        icon={<Zap className="size-4" strokeWidth={2} aria-hidden="true" />}
+                      >
+                        {busy ? "Settling on ledger" : "Create limit order"}
+                      </Button>
+
+                      <p className="text-center text-caption text-ink-4">
+                        The minimum you accept is the on-chain guard — the swap
+                        cannot settle below it.
+                      </p>
+                    </form>
+                  </div>
+
+                  <div
+                    className={actionTab === "ramp" ? "block" : "hidden"}
+                    aria-hidden={actionTab !== "ramp"}
+                  >
+                    <AnchorPanel
+                      walletAddress={walletAddress}
+                      onRequireWallet={() => setConnectModalOpen(true)}
+                      usdcBalance={usdcBalance}
+                      refreshBalances={refreshBalances}
+                      onRate={handleAnchorRate}
+                      notify={showNotice}
+                      onSettled={() => void refreshChain()}
+                    />
+                  </div>
+
+                  {!connected ? (
+                  <div
+                    key="wallet-gate"
+                    className="absolute inset-0 z-20 grid place-items-center bg-canvas/75 p-6 backdrop-blur-[3px]"
+                  >
                     <button
                       type="button"
-                      onClick={flipPair}
-                      disabled={lifecycle === "running"}
-                      aria-label={`Switch pair to ${targetToken} for ${depositToken}`}
-                      className="absolute z-10 grid h-8 w-8 place-items-center rounded-full border border-slate-700 bg-slate-900 text-slate-400 transition-all duration-300 hover:rotate-180 hover:bg-slate-800 hover:text-purple-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => setConnectModalOpen(true)}
+                      className="group max-w-xs text-center"
                     >
-                      <ArrowDown className="h-4 w-4" />
+                      <Wallet
+                        className="mx-auto size-5 text-ink-3 transition-colors group-hover:text-ink"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
+                      <span className="mt-3 block text-subhead text-ink">
+                        Connect a wallet to trade
+                      </span>
+                      <span className="mt-2 block text-footnote leading-relaxed text-ink-3">
+                        Browsing the queue is open to everyone. Freighter is only
+                        needed when something needs signing.
+                      </span>
                     </button>
                   </div>
-                  <Field
-                    label="TARGET RATE / MIN OUTPUT"
-                    suffix={targetToken}
-                    value={minAmountOut}
-                    onChange={setMinAmountOut}
-                    disabled={lifecycle === "running"}
-                    fiatValue={targetFiatValue}
-                    suffixNode={
-                      <TokenSelector
-                        value={targetToken}
-                        balances={tokenBalances}
-                        disabled={lifecycle === "running"}
-                        onSelect={selectTargetToken}
-                      />
-                    }
-                  />
-
-                  <div className="grid grid-cols-2 gap-3 pt-1">
-                    <div>
-                      <div className="mb-2 flex items-center justify-between"><span className="text-[10px] font-medium tracking-wider text-slate-500">SLIPPAGE</span><span className="text-xs text-cyan-300">{slippage.toFixed(1)}%</span></div>
-                      <div className="grid grid-cols-3 gap-1.5">{[0.1, 0.5, 1].map((value) => <button key={value} type="button" disabled={lifecycle === "running"} onClick={() => setSlippage(value)} className={`rounded-lg border py-2 text-[10px] transition ${slippage === value ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-slate-950/50 text-slate-500 hover:text-slate-300"}`}>{value}%</button>)}</div>
-                    </div>
-                    <Field label="KEEPER BOUNTY" suffix="BPS" value={feeBps} onChange={setFeeBps} disabled={lifecycle === "running"} compact />
-                  </div>
-
-                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/50 p-4 text-xs">
-                    <Breakdown label="Full swap input" value={`${numericAmount.toFixed(4)} ${depositToken}`} />
-                    <Breakdown label="Keeper reward" value={`${keeperFeePercent}% of output`} />
-                    <Breakdown label="Trigger price" value={tryPerUsdc > 0 ? `${triggerPriceTry.toFixed(2)} TRY / XLM` : "Rate unavailable"} strong />
-                    {rateSource ? <div key="rate-source" className="mt-2 text-[9px] text-slate-600">{rateSource}</div> : null}
-                  </div>
-
-                  <button type="submit" disabled={lifecycle === "running"} className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 py-4 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 transition hover:from-cyan-400 hover:to-blue-500 disabled:cursor-not-allowed disabled:opacity-50">
-                    {lifecycle === "running" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-                    Create limit order
-                  </button>
-                </form>
-
-                <div className="mt-5 border-t border-slate-800/80 pt-4">
-                  <div className="grid grid-cols-4 gap-1">{lifecycleLabels.map((label, index) => { const done = lifecycleStep > index || lifecycle === "complete"; const current = lifecycle === "running" && lifecycleStep === index; return <div key={label} className="text-center"><div className={`mx-auto mb-2 grid h-7 w-7 place-items-center rounded-full border ${done ? "border-emerald-500 bg-emerald-500 text-slate-950" : current ? "border-cyan-400 bg-cyan-500/10 text-cyan-300" : "border-slate-800 text-slate-600"}`}>{done ? <Check className="h-3.5 w-3.5" /> : current ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <span className="text-[10px]">{index + 1}</span>}</div><span className="text-[9px] leading-tight text-slate-600">{label}</span></div>; })}</div>
+                  ) : null}
                 </div>
-                {message ? <div key="order-message" className="mt-4 flex items-start gap-2 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 text-xs text-slate-300"><Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" /><div>{message}</div></div> : null}
-              </div>
-            </div>
+              </Card>
+            </Reveal>
 
-            {!walletAddress ? (
-              <div
-                key="wallet-gate"
-                className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/50 p-6 backdrop-blur-[3px]"
+            {/* Settlement preview */}
+            <Reveal>
+              <Card className="space-y-5">
+                <CardHeader
+                  icon={<Receipt className="size-4" strokeWidth={2} aria-hidden="true" />}
+                  title="Settlement preview"
+                  subtitle="What the contract holds, pays out and hands back."
+                />
+
+                <div className="border-t border-line pt-4">
+                  <SectionLabel>Wallet</SectionLabel>
+                  {connected ? (
+                    <div className="mt-3 grid gap-5 sm:grid-cols-2">
+                      <BalanceRow symbol="USDC" amount={usdcBalance} meta="Bridge + collateral" />
+                      <BalanceRow
+                        symbol="XLM"
+                        amount={walletBalance}
+                        meta="1 XLM held back for fees"
+                      />
+                    </div>
+                  ) : (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-footnote text-ink-3">
+                        Connect Freighter to read balances and sign.
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => setConnectModalOpen(true)}
+                      >
+                        Connect
+                      </Button>
+                    </div>
+                  )}
+                </div>
+
+                {actionTab === "order" ? (
+                  <div className="border-t border-line">
+                    <ReceiptRow
+                      label="Swap input"
+                      value={`${numericAmount.toFixed(4)} ${depositToken}`}
+                    />
+                    <ReceiptRow
+                      label="Minimum received"
+                      value={`${numericMinOut.toFixed(4)} ${targetToken}`}
+                    />
+                    <ReceiptRow
+                      label="Keeper reward"
+                      value={`${keeperFeePercent.toFixed(2)}% of output`}
+                    />
+                    <ReceiptRow
+                      label="Trigger price"
+                      value={
+                        tryPerUsdc > 0
+                          ? `${triggerPriceTry.toFixed(2)} TRY / XLM`
+                          : "Awaiting anchor rate"
+                      }
+                      emphasis={tryPerUsdc > 0}
+                      last
+                    />
+                  </div>
+                ) : (
+                  <div className="border-t border-line">
+                    <ReceiptRow
+                      label="Anchor rate"
+                      value={
+                        tryPerUsdc > 0
+                          ? `1 USDC = ${tryPerUsdc.toFixed(4)} TRY`
+                          : "Awaiting anchor rate"
+                      }
+                      emphasis={tryPerUsdc > 0}
+                    />
+                    <ReceiptRow label="Rails" value="SEP-6 deposit / withdraw" />
+                    <ReceiptRow label="Bank leg" value="Simulated sandbox transfer" last />
+                  </div>
+                )}
+
+                {rateSource ? (
+                  <p className="text-caption leading-relaxed text-ink-4">{rateSource}</p>
+                ) : null}
+
+                <div>
+                  <SectionLabel className="mb-4">Transaction lifecycle</SectionLabel>
+                  <Stepper
+                    steps={lifecycleLabels}
+                    current={lifecycleStep}
+                    complete={lifecycle === "complete"}
+                    failed={lifecycle === "error"}
+                  />
+                </div>
+
+                {message ? (
+                  <div
+                    key="order-message"
+                    className={cn(
+                      "flex items-start gap-2.5 rounded-md border p-3",
+                      lifecycle === "error"
+                        ? "border-negative/30 bg-negative-soft"
+                        : "border-line bg-surface-2",
+                    )}
+                  >
+                    {lifecycle === "error" ? (
+                      <CircleAlert
+                        className="mt-0.5 size-4 shrink-0 text-negative-ink"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Info
+                        className="mt-0.5 size-4 shrink-0 text-accent-ink"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <p className="min-w-0 break-words text-footnote leading-relaxed text-ink-2">
+                      {message}
+                    </p>
+                  </div>
+                ) : null}
+              </Card>
+            </Reveal>
+          </div>
+        </section>
+
+        {/* ── Orders ──────────────────────────────────────────────────────── */}
+        <section id="orders" className="scroll-mt-28 pt-20">
+          <SectionHeading
+            eyebrow="Execution queue"
+            title="Global orders"
+            description="Every resting and settled order in the vault, read straight from the contract."
+            action={
+              <a
+                href={contractUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="group inline-flex items-center gap-1.5 text-footnote text-ink-3 transition-colors hover:text-accent-ink"
               >
-                <button
-                  type="button"
-                  onClick={() => setConnectModalOpen(true)}
-                  className="group flex max-w-xs flex-col items-center rounded-2xl border border-purple-500/30 bg-slate-900/90 px-7 py-6 text-center shadow-2xl shadow-purple-950/40 transition hover:-translate-y-0.5 hover:border-purple-400/50 hover:bg-slate-900"
-                >
-                  <span className="mb-3 grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-tr from-violet-600 via-purple-500 to-fuchsia-500 text-white shadow-lg shadow-purple-500/30 transition group-hover:scale-105">
-                    <Wallet className="h-5 w-5" />
-                  </span>
-                  <span className="text-sm font-semibold text-white">
-                    Connect Wallet to Deposit or Trade
-                  </span>
-                  <span className="mt-1.5 text-xs leading-relaxed text-slate-400">
-                    View activity freely, then connect Freighter when you are ready to act.
-                  </span>
-                </button>
-              </div>
-            ) : null}
-          </section>
+                Open on Stellar Expert
+                <ArrowUpRight
+                  className="size-3.5 transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:-translate-y-0.5 group-hover:translate-x-0.5"
+                  strokeWidth={2.25}
+                  aria-hidden="true"
+                />
+              </a>
+            }
+          />
 
-          <section key="orders-panel" className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-2xl shadow-black/40 backdrop-blur-xl">
-              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div><h2 className="text-lg font-semibold text-white">Global orders</h2><p className="mt-1 text-xs text-slate-500">Public on-chain execution queue and settlement history</p></div>
-                <button type="button" onClick={() => void refreshChain()} className="flex items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/50 px-3 py-2 text-[10px] font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />Refresh</button>
-              </div>
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+            <Segmented
+              ariaLabel="Order list"
+              size="sm"
+              value={tab}
+              onChange={setTab}
+              className="w-full max-w-xs"
+              options={[
+                { id: "active", label: `Active ${activeCount}` },
+                { id: "history", label: `Settled ${historyCount}` },
+              ]}
+            />
+            <Button
+              size="sm"
+              onClick={() => void refreshChain()}
+              icon={
+                <RefreshCw
+                  className={cn("size-3.5", refreshing && "animate-spin")}
+                  strokeWidth={2}
+                  aria-hidden="true"
+                />
+              }
+            >
+              Refresh
+            </Button>
+          </div>
 
-              <div className="my-4 flex gap-1 rounded-xl bg-slate-950/60 p-1">{([{ id: "active", label: "Active" }, { id: "history", label: "History" }] as const).map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex-1 rounded-lg px-4 py-2 text-xs font-medium transition ${tab === item.id ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"}`}>{item.label}</button>)}</div>
-
-              <div className="space-y-3">
-                {visibleOrders.map((order) => {
-                  const inputSymbol = tokenSymbolFromContract(order.tokenIn);
-                  const outputSymbol = tokenSymbolFromContract(order.tokenOut);
-                  const orderUsdcPerXlm = order.amountIn > 0 && order.minAmountOut > 0
+          {visibleOrders.length > 0 ? (
+            <Reveal stagger className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {visibleOrders.map((order) => {
+                const inputSymbol = tokenSymbolFromContract(order.tokenIn);
+                const outputSymbol = tokenSymbolFromContract(order.tokenOut);
+                const orderUsdcPerXlm =
+                  order.amountIn > 0 && order.minAmountOut > 0
                     ? inputSymbol === "USDC"
                       ? order.amountIn / order.minAmountOut
                       : order.minAmountOut / order.amountIn
                     : 0;
-                  const orderTryPerXlm = orderUsdcPerXlm * tryPerUsdc;
-                  const collateralTry = inputSymbol === "USDC"
+                const orderTryPerXlm = orderUsdcPerXlm * tryPerUsdc;
+                const collateralTry =
+                  inputSymbol === "USDC"
                     ? order.amountIn * tryPerUsdc
                     : order.amountIn * orderTryPerXlm;
-                  return (
-                  <div key={order.id.toString()} className="rounded-xl border border-slate-800/60 bg-slate-950/50 p-4 transition hover:border-slate-700 hover:bg-slate-800/40">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-white">Order #{order.id}</span>
-                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${order.status === "Active" ? "bg-emerald-500/10 text-emerald-300" : order.status === "Executed" ? "bg-cyan-500/10 text-cyan-300" : "bg-slate-700/50 text-slate-400"}`}>{order.status === "Executed" ? "Filled" : order.status}</span>
-                        </div>
-                        <p className="mt-1 font-mono text-[10px] text-slate-600">{shortAddress(order.owner, 8, 6)}</p>
-                      </div>
-                      <div className="rounded-full border border-slate-700/70 bg-slate-800/70 px-3 py-1 text-[10px] font-semibold text-slate-300">{inputSymbol} / {outputSymbol}</div>
-                    </div>
+                return (
+                  <OrderCard
+                    key={order.id.toString()}
+                    id={order.id}
+                    owner={order.owner}
+                    ownerLabel={shortAddress(order.owner, 8, 6)}
+                    status={order.status}
+                    inputSymbol={inputSymbol}
+                    outputSymbol={outputSymbol}
+                    amountIn={order.amountIn}
+                    minAmountOut={order.minAmountOut}
+                    feeBps={order.feeBps}
+                    collateralTry={tryPerUsdc > 0 ? collateralTry : null}
+                    triggerTry={
+                      tryPerUsdc > 0 && order.minAmountOut > 0 ? orderTryPerXlm : null
+                    }
+                    isOwn={connected && order.owner === walletAddress}
+                    canCancel={!connected || order.owner === walletAddress}
+                    busy={busy}
+                    onCancel={() => void cancelOrder(order.id)}
+                    onExecute={() => void executeOrder(order.id)}
+                  />
+                );
+              })}
+            </Reveal>
+          ) : (
+            <div className="mt-5">
+              {tab === "history" ? (
+                <EmptyState
+                  key="empty-history"
+                  icon={<ListChecks className="size-5" strokeWidth={1.75} aria-hidden="true" />}
+                  title="Nothing has settled yet"
+                  description="Executed and cancelled orders land here with the ledger transaction that closed them."
+                />
+              ) : (
+                <EmptyState
+                  key="empty-active"
+                  icon={<Timer className="size-5" strokeWidth={1.75} aria-hidden="true" />}
+                  title="No orders resting"
+                  description="Create a limit order and it will appear here for keepers to pick up."
+                  action={
+                    <Button variant="primary" size="sm" onClick={scrollToConsole}>
+                      Open the console
+                    </Button>
+                  }
+                />
+              )}
+            </div>
+          )}
+        </section>
 
-                    <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl bg-slate-950/60 p-3">
-                      <div key="collateral">
-                        <p className="text-[9px] uppercase tracking-widest text-slate-600">Collateral</p>
-                        <p className="mt-1 text-sm font-semibold text-white">{order.amountIn.toFixed(2)} {inputSymbol}</p>
-                        {tryPerUsdc > 0 ? <div key="collateral-try" className="mt-1 text-[10px] text-slate-500">≈ {collateralTry.toFixed(2)} TRY</div> : null}
-                      </div>
-                      <div key="target" className="text-right">
-                        <p className="text-[9px] uppercase tracking-widest text-slate-600">Target price</p>
-                        <p className="mt-1 text-sm font-semibold text-white">{order.minAmountOut.toFixed(4)} {outputSymbol} min</p>
-                        {tryPerUsdc > 0 && order.minAmountOut > 0 ? <div key="target-try" className="mt-1 inline-flex rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-300">1 XLM ≈ {orderTryPerXlm.toFixed(2)} TRY</div> : null}
-                      </div>
-                    </div>
+    </main>
+  );
 
-                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-                      <span className="text-[10px] text-slate-600">Keeper bounty {(order.feeBps / 100).toFixed(2)}%</span>
-                      <div className="flex flex-wrap justify-end gap-2">
-                        {order.status === "Active" ? <button key="execute" type="button" disabled={lifecycle === "running"} onClick={() => void executeOrder(order.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-[10px] font-bold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40">⚡ Execute (Demo)</button> : null}
-                        {order.status === "Active" && (!walletAddress || order.owner === walletAddress) ? <button key="cancel" type="button" disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40">Cancel</button> : null}
-                      </div>
-                    </div>
-                  </div>
-                  );
-                })}
+  return (
+    <div id="top" className="notranslate relative min-h-screen" translate="no">
+      <AppBackground />
 
-                {visibleOrders.length === 0 ? (
-                  tab === "history" ? (
-                    <div key="empty-history" className="grid min-h-52 place-items-center rounded-xl border border-dashed border-slate-800 text-center"><div><div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-cyan-500/10"><Activity className="h-5 w-5 text-cyan-400" /></div><p className="text-sm font-medium text-slate-300">No settled orders yet</p><p className="mt-2 text-xs text-slate-600">Executed and cancelled orders will appear here.</p></div></div>
-                  ) : (
-                    <div key="empty-active" className="grid min-h-52 place-items-center rounded-xl border border-dashed border-slate-800 text-center"><div><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="text-sm font-medium text-slate-400">No active orders</p><p className="mt-2 text-xs text-slate-600">Create a limit order to start the keeper flow.</p></div></div>
-                  )
-                ) : null}
-              </div>
-          </section>
-        </div>
-      </main>
-
-      <ConnectWalletModal
-        open={connectModalOpen}
-        connecting={walletConnecting}
-        onClose={() => setConnectModalOpen(false)}
-        onConnect={connectWallet}
+      <Navbar
+        key={location.pathname}
+        sections={isConsole ? CONSOLE_SECTIONS : undefined}
+        status={
+          isConsole
+            ? {
+                ledger: telemetry.ledger,
+                healthy: telemetry.healthy,
+                label: NETWORK_LABEL,
+              }
+            : undefined
+        }
+        right={
+          isConsole ? (
+            <WalletControl
+              address={walletAddress}
+              connecting={walletConnecting}
+              onConnect={() => void connectWallet()}
+              onDisconnect={disconnectWallet}
+              explorerBaseUrl={EXPLORER_BASE}
+              shortAddress={(value) => shortAddress(value, 4, 4)}
+            />
+          ) : (
+            <Link to={ROUTES.console} className={buttonStyles({ variant: "primary" })}>
+              Open the console
+            </Link>
+          )
+        }
       />
+
+      {/* Toast rail sits clear of the condensed navbar so a notification never
+          lands on top of the wallet control. */}
+      <div className="pointer-events-none fixed inset-x-4 top-[5.5rem] z-70 flex flex-col items-end gap-2 sm:inset-x-auto sm:right-6">
+        {notices.map((notice) => (
+          <div key={notice.id} className="pointer-events-auto w-full sm:w-96">
+            <Toast
+              notice={notice}
+              explorerBaseUrl={EXPLORER_BASE}
+              onClose={() =>
+                setNotices((current) => current.filter((item) => item.id !== notice.id))
+              }
+            />
+          </div>
+        ))}
+      </div>
+
+      <Routes>
+        <Route path={ROUTES.landing} element={<LandingPage contractUrl={contractUrl} />} />
+        <Route path={ROUTES.console} element={consoleView} />
+        {/* Anything else is a mistyped URL, not a page. */}
+        <Route path="*" element={<Navigate to={ROUTES.landing} replace />} />
+      </Routes>
+
+      <Footer
+        contractId={CONTRACT_ID}
+        contractUrl={contractUrl}
+        networkLabel={NETWORK_LABEL}
+        shortAddress={(value) => shortAddress(value, 8, 6)}
+      />
+
+      <Modal
+        open={connectModalOpen}
+        onClose={() => setConnectModalOpen(false)}
+        title="Connect Freighter"
+        description="TriggerVault never holds your keys. Freighter signs every order, cancellation and bridge payment locally."
+      >
+        <ul className="space-y-3 border-t border-line pt-5">
+          {[
+            { icon: ShieldCheck, text: "Collateral stays in the vault contract, never with us." },
+            { icon: Landmark, text: "Lira legs run over the anchor's SEP-6 rails." },
+            { icon: Coins, text: "Stellar Testnet only — no mainnet value is at risk." },
+          ].map(({ icon: Icon, text }) => (
+            <li key={text} className="flex items-start gap-3">
+              <Icon
+                className="mt-0.5 size-4 shrink-0 text-accent-ink"
+                strokeWidth={2}
+                aria-hidden="true"
+              />
+              <span className="text-footnote leading-relaxed text-ink-2">{text}</span>
+            </li>
+          ))}
+        </ul>
+
+        <Button
+          variant="primary"
+          size="lg"
+          block
+          className="mt-5"
+          loading={walletConnecting}
+          onClick={() => void connectWallet()}
+          icon={<Wallet className="size-4" strokeWidth={2} aria-hidden="true" />}
+        >
+          {walletConnecting ? "Waiting for Freighter" : "Connect wallet"}
+        </Button>
+
+        <p className="mt-3 text-center text-caption uppercase text-ink-4">
+          {NETWORK_LABEL} · non-custodial
+        </p>
+      </Modal>
     </div>
   );
 }
 
-function ConnectWalletModal({
-  open,
-  connecting,
-  onClose,
-  onConnect,
+function BalanceRow({
+  symbol,
+  amount,
+  meta,
 }: {
-  open: boolean;
-  connecting: boolean;
-  onClose: () => void;
-  onConnect: () => Promise<void>;
+  symbol: string;
+  amount: number;
+  meta: string;
 }) {
-  if (!open) return null;
+  return (
+    <div className="min-w-0">
+      <div className="flex items-center gap-1.5 text-caption uppercase text-ink-4">
+        <Coins className="size-3" strokeWidth={2} aria-hidden="true" />
+        {symbol}
+      </div>
+      <p className="mt-1 truncate font-mono text-subhead tnum text-ink">
+        {amount.toFixed(2)}
+      </p>
+      <p className="mt-0.5 truncate text-caption text-ink-4">{meta}</p>
+    </div>
+  );
+}
 
+function ReceiptRow({
+  label,
+  value,
+  emphasis = false,
+  last = false,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+  last?: boolean;
+}) {
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-[#070A12]/75 p-4 backdrop-blur-md"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
+      className={cn(
+        "flex items-center justify-between gap-4 py-2.5",
+        !last && "border-b border-line",
+      )}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="connect-wallet-title"
-        className="relative w-full max-w-md rounded-3xl border border-purple-500/30 bg-slate-900/95 p-8 text-center shadow-2xl shadow-purple-950/50 backdrop-blur-2xl"
+      <span className="shrink-0 text-footnote text-ink-3">{label}</span>
+      <span
+        className={cn(
+          "min-w-0 truncate text-right font-mono text-footnote tnum",
+          emphasis ? "text-accent-ink" : "text-ink",
+        )}
       >
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-4 top-4 grid h-9 w-9 place-items-center rounded-full text-slate-500 transition hover:bg-white/5 hover:text-white"
-          aria-label="Close wallet connection dialog"
-        >
-          <X className="h-4 w-4" />
-        </button>
-
-        <div className="mx-auto mb-5 grid h-16 w-16 animate-pulse place-items-center rounded-2xl bg-gradient-to-tr from-violet-600 via-purple-500 to-fuchsia-500 text-white shadow-xl shadow-purple-500/30">
-          <Zap className="h-8 w-8 fill-white" />
-        </div>
-        <h2 id="connect-wallet-title" className="text-2xl font-bold tracking-tight text-white">
-          Connect Freighter Wallet
-        </h2>
-        <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-slate-400">
-          Connect your Stellar Testnet wallet to deposit through the TRY bridge,
-          create orders, or manage on-chain positions.
-        </p>
-
-        <button
-          type="button"
-          onClick={() => void onConnect()}
-          disabled={connecting}
-          className="mt-7 flex w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-violet-600 via-purple-500 to-fuchsia-500 px-5 py-4 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
-        >
-          {connecting ? (
-            <LoaderCircle className="h-5 w-5 animate-spin" />
-          ) : (
-            <span className="grid h-6 w-6 place-items-center rounded-md bg-white/15 text-xs font-black">
-              F
-            </span>
-          )}
-          <span>{connecting ? "Connecting to Freighter…" : "Connect Wallet"}</span>
-        </button>
-        <p className="mt-4 text-[10px] uppercase tracking-[0.18em] text-slate-600">
-          Stellar Testnet · Non-custodial
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function TelemetryCell({ label, value, icon, healthy }: { label: string; value: string; icon: React.ReactNode; healthy?: boolean }) {
-  return <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 px-4 py-3 backdrop-blur-xl"><div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-slate-500">{icon}{label}</div><div className="flex items-center gap-2 text-xs font-medium text-slate-200">{healthy !== undefined && <span className={`h-1.5 w-1.5 rounded-full ${healthy ? "bg-emerald-400" : "bg-rose-400"}`} />}{value}</div></div>;
-}
-
-function TokenSelector({
-  value,
-  balances,
-  disabled,
-  onSelect,
-}: {
-  value: TokenSymbol;
-  balances: Record<TokenSymbol, number>;
-  disabled: boolean;
-  onSelect: (token: TokenSymbol) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selectorRef = useRef<HTMLDivElement>(null);
-  const selected = TOKEN_OPTIONS.find((token) => token.symbol === value) || TOKEN_OPTIONS[0];
-
-  useEffect(() => {
-    if (!open) return;
-    const handleOutside = (event: PointerEvent): void => {
-      if (
-        event.target instanceof Node &&
-        !selectorRef.current?.contains(event.target)
-      ) {
-        setOpen(false);
-      }
-    };
-    const handleEscape = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("pointerdown", handleOutside);
-    document.addEventListener("keydown", handleEscape);
-    return () => {
-      document.removeEventListener("pointerdown", handleOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, [open]);
-
-  return (
-    <div ref={selectorRef} className="relative mr-3 shrink-0">
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label={`Select token, currently ${value}`}
-        className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-800/80 px-3 py-1.5 font-medium text-white transition-all hover:bg-slate-700/80 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <span className={`grid h-6 w-6 place-items-center rounded-full text-xs font-bold ring-1 ${selected.badgeClass}`}>
-          {selected.badge}
-        </span>
-        <span className="text-xs">{selected.symbol}</span>
-        <span className={`text-sm text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true">⌄</span>
-      </button>
-
-      {open ? (
-        <div
-          role="listbox"
-          aria-label="Available Stellar assets"
-          className="animate-in fade-in zoom-in-95 absolute right-0 top-full z-50 mt-2 w-48 rounded-2xl border border-slate-700/70 bg-slate-900/95 p-2 shadow-2xl backdrop-blur-xl duration-150"
-        >
-          {TOKEN_OPTIONS.map((token) => (
-            <button
-              key={token.symbol}
-              type="button"
-              role="option"
-              aria-selected={token.symbol === value}
-              onClick={() => {
-                onSelect(token.symbol);
-                setOpen(false);
-              }}
-              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-all hover:bg-purple-500/10"
-            >
-              <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-sm font-bold ring-1 ${token.badgeClass}`}>
-                {token.badge}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-xs font-semibold text-white">{token.symbol}</span>
-                <span className="block truncate text-[9px] text-slate-500">{token.name}</span>
-              </span>
-              <span className="text-right text-[10px] font-medium text-slate-300">
-                {balances[token.symbol].toFixed(2)}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function Field({ label, suffix, value, onChange, disabled = false, fiatValue, compact = false, suffixNode }: { label: string; suffix: string; value: string; onChange: (value: string) => void; disabled?: boolean; fiatValue?: string; compact?: boolean; suffixNode?: ReactNode }) {
-  return <div className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className={`flex items-center rounded-xl border border-slate-800 bg-slate-950/60 transition focus-within:border-cyan-500/60 focus-within:ring-2 focus-within:ring-cyan-500/10 ${disabled ? "opacity-50" : ""}`}><div className="min-w-0 flex-1"><input aria-label={label} type="text" inputMode="decimal" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value.replace(",", "."))} className={`w-full bg-transparent px-4 pt-3 font-semibold text-white outline-none disabled:cursor-not-allowed ${compact ? "pb-3 text-base" : fiatValue ? "pb-0.5 text-2xl" : "pb-3 text-2xl"}`} />{fiatValue && <span className="block px-4 pb-3 text-xs text-slate-500">{fiatValue}</span>}</div>{suffixNode ?? <span className="mr-3 rounded-full border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200">{suffix}</span>}</div></div>;
-}
-
-function Breakdown({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
-  return <div className={`flex items-center justify-between py-1.5 ${strong ? "mt-1 border-t border-slate-800 pt-2.5" : ""}`}><span className="text-slate-500">{label}</span><span className={strong ? "text-cyan-300" : "text-slate-300"}>{value}</span></div>;
-}
-
-function ToastNotice({ notice, onClose }: { notice: Notice; onClose: () => void }) {
-  const success = notice.type === "success";
-  const info = notice.type === "info";
-  return (
-    <div className={`animate-[toast-in_180ms_ease-out] rounded-xl border bg-slate-950/95 shadow-2xl backdrop-blur-xl ${success ? "border-emerald-500/50 shadow-emerald-950/40" : info ? "border-cyan-500/50 shadow-cyan-950/40" : "border-rose-500/50 shadow-rose-950/40"}`} role="status" aria-live="polite">
-      <div className="flex items-start gap-3 p-4">
-        <div className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full ${success ? "bg-emerald-500/15 text-emerald-400" : info ? "bg-cyan-500/15 text-cyan-400" : "bg-rose-500/15 text-rose-400"}`}>
-          {success ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold text-white">{notice.title}</p>
-          <p className="mt-1 break-words font-mono text-[10px] leading-relaxed text-slate-400">{notice.detail}</p>
-          {notice.txHash && (
-            <a
-              href={`https://stellar.expert/explorer/testnet/tx/${encodeURIComponent(notice.txHash)}`}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-2 inline-flex items-center gap-1.5 font-mono text-[10px] text-cyan-400 hover:text-cyan-300"
-            >
-              VIEW ON STELLAREXPERT
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-        </div>
-        <button onClick={onClose} className="text-slate-600 hover:text-white" aria-label="Close notification"><X className="h-4 w-4" /></button>
-      </div>
-      <div className={`h-0.5 ${success ? "bg-emerald-400" : info ? "bg-cyan-400" : "bg-rose-400"}`} />
+        {value}
+      </span>
     </div>
   );
 }
@@ -1566,7 +1676,9 @@ function ToastNotice({ notice, onClose }: { notice: Notice; onClose: () => void 
 export default function AppWithBoundary() {
   return (
     <ErrorBoundary>
-      <App />
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
     </ErrorBoundary>
   );
 }
