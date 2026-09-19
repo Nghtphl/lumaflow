@@ -157,14 +157,14 @@ demo URL, known limitations, and the **Stellar Skills used, cited by path**.
 
 ## Submission checklist
 
-- [ ] Track selected on the portal (you are only judged on tracks chosen at submission)
-- [ ] Public GitHub repo + well-structured README
-- [ ] Contract IDs documented (vault / USDC SAC / router) with explorer links
-- [ ] Live demo URL, reachable from a stranger's laptop
-- [ ] Anchor flow demonstrable end-to-end with real tx hashes
-- [ ] One real `execute_order` transaction on testnet
-- [ ] Mermaid architecture diagram in the README/docs
-- [ ] Stellar Skills cited **by path**
-- [ ] `cargo test` green; `cargo build --release --target wasm32-unknown-unknown` clean
-- [ ] Pitch deck built on the official template
-- [ ] Scale Track only: post-hackathon roadmap toward SCF/InstAward
+- [ ] Track selected on the portal (you are only judged on tracks chosen at submission) — *organiser portal action*
+- [x] Public GitHub repo + well-structured README
+- [x] Contract IDs documented (vault / USDC SAC / router) with explorer links
+- [x] Live demo URL, reachable from a stranger's laptop
+- [ ] Anchor flow demonstrable end-to-end with real tx hashes — *needs a signed run from a funded Freighter account; paste the hashes into the README's live-deployment table*
+- [ ] One real `execute_order` transaction on testnet — *same: requires a wallet signature, cannot be produced from the repo alone*
+- [x] Mermaid architecture diagram in the README/docs
+- [x] Stellar Skills cited **by path**
+- [x] `cargo test` green; `cargo build --release --target wasm32-unknown-unknown` clean
+- [ ] Pitch deck built on the official template — *official template not in the repo*
+- [x] Scale Track only: post-hackathon roadmap toward SCF/InstAward

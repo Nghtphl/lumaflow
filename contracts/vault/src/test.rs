@@ -1,4 +1,12 @@
 #![cfg(test)]
+//! Each router double lives in its own module on purpose.
+//!
+//! `#[contractimpl]` emits module-level items named after the *method*
+//! (`__swap_exact_tokens_for_tokens`, `__SPEC_XDR_FN_...`), not after the
+//! contract type. Three routers sharing a module therefore redefine the same
+//! four symbols and the test target stops compiling. A module per double keeps
+//! the generated names apart.
+
 use super::*;
 use soroban_sdk::{
     contract, contractimpl,
@@ -14,103 +22,118 @@ use soroban_sdk::{
 ///
 /// The contract doubles as its own pair, mirroring a Uniswap-style pool holding
 /// both reserves.
-#[contract]
-pub struct PullingRouter;
+mod pulling_router {
+    use super::*;
 
-#[contractimpl]
-impl PullingRouter {
-    pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
-        env.current_contract_address()
-    }
+    #[contract]
+    pub struct PullingRouter;
 
-    pub fn swap_exact_tokens_for_tokens(
-        env: Env,
-        amount_in: i128,
-        _amount_out_min: i128,
-        path: Vec<Address>,
-        to: Address,
-        _deadline: u64,
-    ) -> Vec<i128> {
-        to.require_auth();
+    #[contractimpl]
+    impl PullingRouter {
+        pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
+            env.current_contract_address()
+        }
 
-        let pair = env.current_contract_address();
-        let token_in = token::Client::new(&env, &path.get(0).unwrap());
-        token_in.transfer(&to, &pair, &amount_in);
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            amount_in: i128,
+            _amount_out_min: i128,
+            path: Vec<Address>,
+            to: Address,
+            _deadline: u64,
+        ) -> Vec<i128> {
+            to.require_auth();
 
-        let simulated_out: i128 = amount_in * 2;
-        let token_out = token::Client::new(&env, &path.get(1).unwrap());
-        token_out.transfer(&pair, &to, &simulated_out);
+            let pair = env.current_contract_address();
+            let token_in = token::Client::new(&env, &path.get(0).unwrap());
+            token_in.transfer(&to, &pair, &amount_in);
 
-        let mut res = Vec::new(&env);
-        res.push_back(amount_in);
-        res.push_back(simulated_out);
-        res
+            let simulated_out: i128 = amount_in * 2;
+            let token_out = token::Client::new(&env, &path.get(1).unwrap());
+            token_out.transfer(&pair, &to, &simulated_out);
+
+            let mut res = Vec::new(&env);
+            res.push_back(amount_in);
+            res.push_back(simulated_out);
+            res
+        }
     }
 }
+use pulling_router::PullingRouter;
 
 /// Takes the input like a real router but delivers less than it claims. The
 /// vault must believe its own balance delta, not the returned amounts.
-#[contract]
-pub struct MisreportingRouter;
+mod misreporting_router {
+    use super::*;
 
-#[contractimpl]
-impl MisreportingRouter {
-    pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
-        env.current_contract_address()
-    }
+    #[contract]
+    pub struct MisreportingRouter;
 
-    pub fn swap_exact_tokens_for_tokens(
-        env: Env,
-        amount_in: i128,
-        _amount_out_min: i128,
-        path: Vec<Address>,
-        to: Address,
-        _deadline: u64,
-    ) -> Vec<i128> {
-        to.require_auth();
+    #[contractimpl]
+    impl MisreportingRouter {
+        pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
+            env.current_contract_address()
+        }
 
-        let pair = env.current_contract_address();
-        token::Client::new(&env, &path.get(0).unwrap()).transfer(&to, &pair, &amount_in);
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            amount_in: i128,
+            _amount_out_min: i128,
+            path: Vec<Address>,
+            to: Address,
+            _deadline: u64,
+        ) -> Vec<i128> {
+            to.require_auth();
 
-        // Transfer less than the limit while claiming a sufficient router output.
-        token::Client::new(&env, &path.get(1).unwrap()).transfer(&pair, &to, &800);
+            let pair = env.current_contract_address();
+            token::Client::new(&env, &path.get(0).unwrap()).transfer(&to, &pair, &amount_in);
 
-        let mut res = Vec::new(&env);
-        res.push_back(amount_in);
-        res.push_back(1_000);
-        res
+            // Transfer less than the limit while claiming a sufficient router output.
+            token::Client::new(&env, &path.get(1).unwrap()).transfer(&pair, &to, &800);
+
+            let mut res = Vec::new(&env);
+            res.push_back(amount_in);
+            res.push_back(1_000);
+            res
+        }
     }
 }
+use misreporting_router::MisreportingRouter;
 
 /// Pays the output without ever taking the input. Left unchecked this would
 /// strand the order's collateral in the vault, unattributed to any order.
-#[contract]
-pub struct NonPullingRouter;
+mod non_pulling_router {
+    use super::*;
 
-#[contractimpl]
-impl NonPullingRouter {
-    pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
-        env.current_contract_address()
-    }
+    #[contract]
+    pub struct NonPullingRouter;
 
-    pub fn swap_exact_tokens_for_tokens(
-        env: Env,
-        amount_in: i128,
-        _amount_out_min: i128,
-        path: Vec<Address>,
-        to: Address,
-        _deadline: u64,
-    ) -> Vec<i128> {
-        let pair = env.current_contract_address();
-        let simulated_out: i128 = amount_in * 2;
-        token::Client::new(&env, &path.get(1).unwrap()).transfer(&pair, &to, &simulated_out);
+    #[contractimpl]
+    impl NonPullingRouter {
+        pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
+            env.current_contract_address()
+        }
 
-        let mut res = Vec::new(&env);
-        res.push_back(amount_in);
-        res.push_back(simulated_out);
-        res
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            amount_in: i128,
+            _amount_out_min: i128,
+            path: Vec<Address>,
+            to: Address,
+            _deadline: u64,
+        ) -> Vec<i128> {
+            let pair = env.current_contract_address();
+            let simulated_out: i128 = amount_in * 2;
+            token::Client::new(&env, &path.get(1).unwrap()).transfer(&pair, &to, &simulated_out);
+
+            let mut res = Vec::new(&env);
+            res.push_back(amount_in);
+            res.push_back(simulated_out);
+            res
+        }
     }
 }
+use non_pulling_router::NonPullingRouter;
 
 struct Fixture {
     contract_id: Address,
