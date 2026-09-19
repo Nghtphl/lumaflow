@@ -311,6 +311,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 
 function App() {
   const [actionTab, setActionTab] = useState<ActionTab>("order");
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
   const [walletAddress, setWalletAddress] = useState("");
   const [walletConnecting, setWalletConnecting] = useState(false);
   const [walletBalance, setWalletBalance] = useState(0);
@@ -612,6 +613,7 @@ function App() {
       window.localStorage.setItem("trigger_vault_wallet", address);
       setWalletAddress(address);
       await fetchWalletBalance(address);
+      setConnectModalOpen(false);
       showNotice(
         "success",
         `Wallet Connected: ${shortAddress(address, 8, 6)}`,
@@ -728,9 +730,7 @@ function App() {
     if (operationLock.current) return;
     setMessage("");
     if (!walletAddress) {
-      const detail = "Please connect your Freighter wallet first.";
-      setMessage(detail);
-      showNotice("error", "Wallet Not Connected", detail);
+      setConnectModalOpen(true);
       return;
     }
     if (numericAmount <= 0 || numericMinOut <= 0) {
@@ -825,7 +825,11 @@ function App() {
   };
 
   const cancelOrder = async (id: number): Promise<void> => {
-    if (!walletAddress || operationLock.current) return;
+    if (!walletAddress) {
+      setConnectModalOpen(true);
+      return;
+    }
+    if (operationLock.current) return;
     operationLock.current = true;
     setMessage("");
     // Collateral is the SAC-wrapped USDC that came from the anchor, so the
@@ -874,7 +878,11 @@ function App() {
   };
 
   const executeOrder = async (id: number): Promise<void> => {
-    if (!walletAddress || operationLock.current) return;
+    if (!walletAddress) {
+      setConnectModalOpen(true);
+      return;
+    }
+    if (operationLock.current) return;
     operationLock.current = true;
     setMessage("");
     try {
@@ -939,12 +947,14 @@ function App() {
       <header className="relative z-20 border-b border-slate-800/70 bg-[#0B0F19]/80 backdrop-blur-xl">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 via-sky-500 to-amber-400 shadow-lg shadow-cyan-950/50">
+            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-tr from-violet-600 via-purple-500 to-fuchsia-500 p-2.5 text-white shadow-lg shadow-purple-500/30">
               <Zap className="h-5 w-5 fill-white text-white" />
             </div>
             <div>
               <div className="flex items-center gap-2.5">
-                <h1 className="text-base font-bold tracking-tight text-white">TriggerVault</h1>
+                <h1 className="bg-gradient-to-r from-white via-purple-200 to-fuchsia-300 bg-clip-text text-base font-bold tracking-tight text-transparent">
+                  TriggerVault
+                </h1>
                 <span className="hidden rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[10px] font-medium text-sky-300 sm:inline-flex">
                   <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-sky-400" />
                   Stellar Testnet
@@ -988,7 +998,7 @@ function App() {
         </nav>
       </header>
 
-      <main className="relative z-10 mx-auto max-w-2xl px-4 py-8">
+      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <section className="mb-6 grid grid-cols-2 gap-3">
           <TelemetryCell label="RPC latency" value={telemetry.latency === null ? "—" : `${telemetry.latency} ms`} icon={<Activity className="h-3.5 w-3.5" />} healthy={telemetry.healthy} />
           <TelemetryCell label="Latest ledger" value={telemetry.ledger?.toLocaleString() || "—"} icon={<Gauge className="h-3.5 w-3.5" />} />
@@ -1007,8 +1017,8 @@ function App() {
           </a>
         </section>
 
-        <div className="space-y-6">
-          <section className="rounded-2xl border border-slate-800/80 bg-slate-900/70 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl sm:p-5">
+        <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,520px)_minmax(0,1fr)]">
+          <section className="relative overflow-hidden rounded-2xl border border-slate-800/80 bg-slate-900/70 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl sm:p-5">
             <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-950/70 p-1" role="tablist" aria-label="Vault actions">
               {([
                 { id: "order", label: "Limit Order" },
@@ -1034,6 +1044,7 @@ function App() {
             {actionTab === "ramp" ? (
               <AnchorPanel
                 walletAddress={walletAddress}
+                onRequireWallet={() => setConnectModalOpen(true)}
                 onUsdcBalance={setUsdcBalance}
                 onRate={handleAnchorRate}
                 notify={showNotice}
@@ -1085,12 +1096,34 @@ function App() {
                 {message ? <div key="order-message" className="mt-4 flex items-start gap-2 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 text-xs text-slate-300"><Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" /><div>{message}</div></div> : null}
               </div>
             )}
+
+            {!walletAddress ? (
+              <div
+                key="wallet-gate"
+                className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/50 p-6 backdrop-blur-[3px]"
+              >
+                <button
+                  type="button"
+                  onClick={() => setConnectModalOpen(true)}
+                  className="group flex max-w-xs flex-col items-center rounded-2xl border border-purple-500/30 bg-slate-900/90 px-7 py-6 text-center shadow-2xl shadow-purple-950/40 transition hover:-translate-y-0.5 hover:border-purple-400/50 hover:bg-slate-900"
+                >
+                  <span className="mb-3 grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-tr from-violet-600 via-purple-500 to-fuchsia-500 text-white shadow-lg shadow-purple-500/30 transition group-hover:scale-105">
+                    <Wallet className="h-5 w-5" />
+                  </span>
+                  <span className="text-sm font-semibold text-white">
+                    Connect Wallet to Deposit or Trade
+                  </span>
+                  <span className="mt-1.5 text-xs leading-relaxed text-slate-400">
+                    View activity freely, then connect Freighter when you are ready to act.
+                  </span>
+                </button>
+              </div>
+            ) : null}
           </section>
 
-          {actionTab === "order" ? (
-            <section key="orders-panel" className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-2xl shadow-black/40 backdrop-blur-xl">
+          <section key="orders-panel" className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-2xl shadow-black/40 backdrop-blur-xl">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div><h2 className="text-lg font-semibold text-white">Your orders</h2><p className="mt-1 text-xs text-slate-500">Live execution queue and settlement history</p></div>
+                <div><h2 className="text-lg font-semibold text-white">Global orders</h2><p className="mt-1 text-xs text-slate-500">Public on-chain execution queue and settlement history</p></div>
                 <button type="button" onClick={() => void refreshChain()} className="flex items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/50 px-3 py-2 text-[10px] font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />Refresh</button>
               </div>
 
@@ -1126,8 +1159,8 @@ function App() {
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                       <span className="text-[10px] text-slate-600">Keeper bounty {(order.feeBps / 100).toFixed(2)}%</span>
                       <div className="flex flex-wrap justify-end gap-2">
-                        {order.status === "Active" ? <button key="execute" type="button" disabled={!walletAddress || lifecycle === "running"} onClick={() => void executeOrder(order.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-[10px] font-bold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40">⚡ Execute (Demo)</button> : null}
-                        {order.status === "Active" && order.owner === walletAddress ? <button key="cancel" type="button" disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40">Cancel</button> : null}
+                        {order.status === "Active" ? <button key="execute" type="button" disabled={lifecycle === "running"} onClick={() => void executeOrder(order.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-[10px] font-bold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40">⚡ Execute (Demo)</button> : null}
+                        {order.status === "Active" && (!walletAddress || order.owner === walletAddress) ? <button key="cancel" type="button" disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40">Cancel</button> : null}
                       </div>
                     </div>
                   </div>
@@ -1141,10 +1174,85 @@ function App() {
                   )
                 ) : null}
               </div>
-            </section>
-          ) : null}
+          </section>
         </div>
       </main>
+
+      <ConnectWalletModal
+        open={connectModalOpen}
+        connecting={walletConnecting}
+        onClose={() => setConnectModalOpen(false)}
+        onConnect={connectWallet}
+      />
+    </div>
+  );
+}
+
+function ConnectWalletModal({
+  open,
+  connecting,
+  onClose,
+  onConnect,
+}: {
+  open: boolean;
+  connecting: boolean;
+  onClose: () => void;
+  onConnect: () => Promise<void>;
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-[#070A12]/75 p-4 backdrop-blur-md"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="connect-wallet-title"
+        className="relative w-full max-w-md rounded-3xl border border-purple-500/30 bg-slate-900/95 p-8 text-center shadow-2xl shadow-purple-950/50 backdrop-blur-2xl"
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 grid h-9 w-9 place-items-center rounded-full text-slate-500 transition hover:bg-white/5 hover:text-white"
+          aria-label="Close wallet connection dialog"
+        >
+          <X className="h-4 w-4" />
+        </button>
+
+        <div className="mx-auto mb-5 grid h-16 w-16 animate-pulse place-items-center rounded-2xl bg-gradient-to-tr from-violet-600 via-purple-500 to-fuchsia-500 text-white shadow-xl shadow-purple-500/30">
+          <Zap className="h-8 w-8 fill-white" />
+        </div>
+        <h2 id="connect-wallet-title" className="text-2xl font-bold tracking-tight text-white">
+          Connect Freighter Wallet
+        </h2>
+        <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-slate-400">
+          Connect your Stellar Testnet wallet to deposit through the TRY bridge,
+          create orders, or manage on-chain positions.
+        </p>
+
+        <button
+          type="button"
+          onClick={() => void onConnect()}
+          disabled={connecting}
+          className="mt-7 flex w-full items-center justify-center gap-3 rounded-xl bg-gradient-to-r from-violet-600 via-purple-500 to-fuchsia-500 px-5 py-4 text-sm font-semibold text-white shadow-lg shadow-purple-500/25 transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
+        >
+          {connecting ? (
+            <LoaderCircle className="h-5 w-5 animate-spin" />
+          ) : (
+            <span className="grid h-6 w-6 place-items-center rounded-md bg-white/15 text-xs font-black">
+              F
+            </span>
+          )}
+          {connecting ? "Connecting to Freighter…" : "Connect Wallet"}
+        </button>
+        <p className="mt-4 text-[10px] uppercase tracking-[0.18em] text-slate-600">
+          Stellar Testnet · Non-custodial
+        </p>
+      </div>
     </div>
   );
 }

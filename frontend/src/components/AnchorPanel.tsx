@@ -4,6 +4,7 @@ import {
   ArrowUpFromLine,
   Banknote,
   Check,
+  ChevronDown,
   Copy,
   ExternalLink,
   Landmark,
@@ -49,6 +50,8 @@ const FALLBACK_MIN_USDC = 1;
 
 export interface AnchorPanelProps {
   walletAddress: string;
+  /** Opens the shared Freighter prompt for any protected bridge action. */
+  onRequireWallet: () => void;
   /** Called whenever the on-chain USDC balance is re-read. */
   onUsdcBalance: (balance: number) => void;
   /** TRY per 1 USDC, so the order form can price triggers in lira. */
@@ -66,12 +69,24 @@ export interface AnchorPanelProps {
 }
 
 type Flow = "deposit" | "withdraw";
+type DisplayCurrency = "TRY" | "USDC" | "XLM";
+
+const CURRENCY_OPTIONS: ReadonlyArray<{
+  code: DisplayCurrency;
+  icon: string;
+  name: string;
+}> = [
+  { code: "TRY", icon: "🇹🇷", name: "Turkish Lira Anchor" },
+  { code: "USDC", icon: "💵", name: "Circle Testnet" },
+  { code: "XLM", icon: "✦", name: "Stellar Lumens" },
+];
 
 const messageOf = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 export default function AnchorPanel({
   walletAddress,
+  onRequireWallet,
   onUsdcBalance,
   onRate,
   notify,
@@ -88,6 +103,8 @@ export default function AnchorPanel({
 
   const [flow, setFlow] = useState<Flow>("deposit");
   const [busy, setBusy] = useState(false);
+  const [displayCurrency, setDisplayCurrency] = useState<DisplayCurrency>("TRY");
+  const [currencyMenuOpen, setCurrencyMenuOpen] = useState(false);
 
   const [tryAmount, setTryAmount] = useState("500");
   const [quote, setQuote] = useState<Sep38Price | null>(null);
@@ -261,7 +278,11 @@ export default function AnchorPanel({
   );
 
   const enableUsdc = async (): Promise<void> => {
-    if (!cfg || !walletAddress) return;
+    if (!walletAddress) {
+      onRequireWallet();
+      return;
+    }
+    if (!cfg) return;
     setEnablingTrustline(true);
     try {
       const created = await ensureTrustline(cfg, walletAddress);
@@ -298,7 +319,11 @@ export default function AnchorPanel({
   };
 
   const requestDeposit = async (): Promise<void> => {
-    if (!cfg || !walletAddress) return;
+    if (!walletAddress) {
+      onRequireWallet();
+      return;
+    }
+    if (!cfg) return;
     const amount = Number(tryAmount.replace(",", "."));
     if (!Number.isFinite(amount) || amount < minTry || amount > maxTry) {
       notify(
@@ -340,7 +365,11 @@ export default function AnchorPanel({
   };
 
   const confirmBankTransfer = async (): Promise<void> => {
-    if (!cfg || !walletAddress || !deposit) return;
+    if (!walletAddress) {
+      onRequireWallet();
+      return;
+    }
+    if (!cfg || !deposit) return;
     setBusy(true);
     try {
       const amount = Number(tryAmount.replace(",", ".")).toFixed(2);
@@ -360,7 +389,11 @@ export default function AnchorPanel({
   };
 
   const requestWithdraw = async (): Promise<void> => {
-    if (!cfg || !walletAddress) return;
+    if (!walletAddress) {
+      onRequireWallet();
+      return;
+    }
+    if (!cfg) return;
     const amount = Number(withdrawAmount.replace(",", "."));
     if (!Number.isFinite(amount) || amount < minUsdc) {
       notify(
@@ -395,7 +428,11 @@ export default function AnchorPanel({
   };
 
   const payWithdrawal = async (): Promise<void> => {
-    if (!cfg || !walletAddress || !withdrawal) return;
+    if (!walletAddress) {
+      onRequireWallet();
+      return;
+    }
+    if (!cfg || !withdrawal) return;
     setBusy(true);
     try {
       const amount = Number(withdrawAmount.replace(",", ".")).toFixed(7);
@@ -475,32 +512,47 @@ export default function AnchorPanel({
         </p>
       ) : (
         <div>
-          <div className="mb-4 flex items-center justify-between rounded-xl border border-slate-800/80 bg-slate-950/50 px-4 py-3">
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-slate-800/80 bg-slate-950/50 px-4 py-3">
             <div>
-              <p className="text-[9px] uppercase tracking-widest text-slate-500">
-                {cfg.asset.code} (anchor)
-              </p>
+              <p className="text-[9px] uppercase tracking-widest text-slate-500">Bridge wallet balance</p>
               <p className="text-xl font-semibold text-white">{usdcBalance.toFixed(2)} <span className="text-xs font-medium text-slate-500">{cfg.asset.code}</span></p>
             </div>
-            {!walletAddress ? (
-              <span className="font-mono text-[10px] text-slate-600">CONNECT WALLET</span>
-            ) : trustlineReady ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1.5 text-[10px] font-semibold text-emerald-300"><Check className="h-3 w-3" />Bridge ready</span>
-            ) : (
-              <button
-                type="button"
-                onClick={() => void enableUsdc()}
-                disabled={enablingTrustline}
-                className="flex items-center gap-1.5 border border-amber-500/50 bg-amber-500/10 px-2.5 py-1.5 font-mono text-[10px] text-amber-200 disabled:cursor-wait"
-              >
-                {enablingTrustline ? (
-                  <LoaderCircle className="h-3 w-3 animate-spin" />
-                ) : (
-                  <ShieldCheck className="h-3 w-3" />
-                )}
-                ENABLE USDC
-              </button>
-            )}
+            <div className="flex flex-col items-end gap-2">
+              <CurrencySelector
+                selected={displayCurrency}
+                open={currencyMenuOpen}
+                onToggle={() => setCurrencyMenuOpen((current) => !current)}
+                onSelect={(currency) => {
+                  setDisplayCurrency(currency);
+                  setCurrencyMenuOpen(false);
+                }}
+              />
+              {!walletAddress ? (
+                <button
+                  type="button"
+                  onClick={onRequireWallet}
+                  className="font-mono text-[10px] text-purple-300 transition hover:text-purple-200"
+                >
+                  CONNECT WALLET
+                </button>
+              ) : trustlineReady ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1.5 text-[10px] font-semibold text-emerald-300"><Check className="h-3 w-3" />Bridge ready</span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => void enableUsdc()}
+                  disabled={enablingTrustline}
+                  className="flex items-center gap-1.5 rounded-lg border border-amber-500/50 bg-amber-500/10 px-2.5 py-1.5 font-mono text-[10px] text-amber-200 disabled:cursor-wait"
+                >
+                  {enablingTrustline ? (
+                    <LoaderCircle className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <ShieldCheck className="h-3 w-3" />
+                  )}
+                  ENABLE USDC
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="mb-4 grid grid-cols-2 rounded-xl bg-slate-950/70 p-1" role="tablist" aria-label="Bank bridge direction">
@@ -719,6 +771,67 @@ export default function AnchorPanel({
           ) : null}
         </div>
       )}
+    </div>
+  );
+}
+
+function CurrencySelector({
+  selected,
+  open,
+  onToggle,
+  onSelect,
+}: {
+  selected: DisplayCurrency;
+  open: boolean;
+  onToggle: () => void;
+  onSelect: (currency: DisplayCurrency) => void;
+}) {
+  const selectedOption =
+    CURRENCY_OPTIONS.find((option) => option.code === selected) || CURRENCY_OPTIONS[0];
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex items-center gap-2 rounded-full border border-slate-700/70 bg-slate-800/80 px-3 py-2 text-xs font-semibold text-slate-100 shadow-lg shadow-black/20 transition hover:border-purple-500/40 hover:bg-slate-800"
+      >
+        <span aria-hidden="true">{selectedOption.icon}</span>
+        {selectedOption.code}
+        <ChevronDown className={`h-3.5 w-3.5 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+
+      {open ? (
+        <div
+          role="listbox"
+          aria-label="Bridge currency"
+          className="animate-in fade-in zoom-in-95 absolute right-0 top-full z-30 mt-2 w-64 rounded-2xl border border-slate-700/60 bg-slate-900/90 p-2 shadow-2xl backdrop-blur-xl duration-150"
+        >
+          {CURRENCY_OPTIONS.map((option) => (
+            <button
+              key={option.code}
+              type="button"
+              role="option"
+              aria-selected={selected === option.code}
+              onClick={() => onSelect(option.code)}
+              className="flex w-full items-center gap-3 rounded-xl p-2.5 text-left text-slate-300 transition-all hover:bg-purple-500/10 hover:text-purple-300"
+            >
+              <span className="grid h-9 w-9 place-items-center rounded-xl bg-slate-800/80 text-lg" aria-hidden="true">
+                {option.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-semibold">{option.code}</span>
+                <span className="mt-0.5 block truncate text-[10px] text-slate-500">
+                  {option.name}
+                </span>
+              </span>
+              {selected === option.code ? <Check className="h-4 w-4 text-purple-300" /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
