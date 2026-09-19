@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Gauge,
   LoaderCircle,
+  LogOut,
   RefreshCw,
   ShieldCheck,
   Terminal,
@@ -14,9 +15,11 @@ import {
   X,
 } from "lucide-react";
 import {
+  getAddress as getPublicKey,
   isConnected,
   requestAccess,
   signTransaction,
+  WatchWalletChanges,
 } from "@stellar/freighter-api";
 import {
   Account,
@@ -51,6 +54,7 @@ const vault = new Contract(CONTRACT_ID);
 type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type LifecycleState = "idle" | "running" | "complete" | "error";
+type NoticeType = "success" | "error" | "info";
 
 interface OrderItem {
   id: number;
@@ -72,6 +76,22 @@ interface Telemetry {
   updatedAt: Date | null;
 }
 
+interface Notice {
+  id: number;
+  type: NoticeType;
+  title: string;
+  detail: string;
+}
+
+const parseFreighterAddress = (result: unknown): string => {
+  if (typeof result === "string") return result;
+  if (typeof result !== "object" || result === null) return "";
+  const value = result as { address?: unknown; publicKey?: unknown };
+  if (typeof value.address === "string") return value.address;
+  if (typeof value.publicKey === "string") return value.publicKey;
+  return "";
+};
+
 const lifecycleLabels = [
   "Simulation",
   "Wallet Signature",
@@ -81,6 +101,17 @@ const lifecycleLabels = [
 
 const shortAddress = (value: string, start = 6, end = 5): string =>
   value ? `${value.slice(0, start)}…${value.slice(-end)}` : "—";
+
+const safeMessage = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message;
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? serialized : String(value);
+  } catch {
+    return String(value);
+  }
+};
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -119,6 +150,7 @@ async function waitForTransaction(hash: string): Promise<rpc.Api.GetTransactionR
 
 export default function App() {
   const [walletAddress, setWalletAddress] = useState("");
+  const [walletConnecting, setWalletConnecting] = useState(false);
   const [walletBalance, setWalletBalance] = useState(0);
   const [amountIn, setAmountIn] = useState("25");
   const [minAmountOut, setMinAmountOut] = useState("3.8");
@@ -136,6 +168,20 @@ export default function App() {
   const [lifecycle, setLifecycle] = useState<LifecycleState>("idle");
   const [lifecycleStep, setLifecycleStep] = useState(-1);
   const [message, setMessage] = useState("");
+  const [notices, setNotices] = useState<Notice[]>([]);
+
+  const showNotice = (
+    type: NoticeType,
+    title: string,
+    detail: string,
+  ): void => {
+    const id = Date.now();
+    setNotices((current) => [...current, { id, type, title, detail }]);
+    window.setTimeout(
+      () => setNotices((current) => current.filter((item) => item.id !== id)),
+      5_000,
+    );
+  };
 
   const numericAmount = Number(amountIn) || 0;
   const numericMinOut = Number(minAmountOut) || 0;
@@ -232,7 +278,9 @@ export default function App() {
     try {
       await Promise.all([fetchTelemetry(), fetchOrders()]);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Chain refresh failed");
+      const detail = safeMessage(error) || "Chain refresh failed";
+      setMessage(detail);
+      showNotice("error", "Chain refresh failed", detail);
     } finally {
       setRefreshing(false);
     }
@@ -244,6 +292,44 @@ export default function App() {
     return () => {
       window.clearTimeout(initialRefresh);
       window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    const watcher = new WatchWalletChanges(2_000);
+    const restoreWallet = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const connection: unknown = await isConnected();
+          const connected =
+            typeof connection === "boolean"
+              ? connection
+              : Boolean(
+                  (connection as { isConnected?: unknown } | null)?.isConnected,
+                );
+          if (!connected) return;
+          const result: unknown = await getPublicKey();
+          const address =
+            parseFreighterAddress(result) ||
+            window.localStorage.getItem("trigger_vault_wallet") ||
+            "";
+          if (!address) return;
+          window.localStorage.setItem("trigger_vault_wallet", address);
+          setWalletAddress(address);
+        } catch {
+          window.localStorage.removeItem("trigger_vault_wallet");
+        }
+      })();
+    }, 0);
+    watcher.watch(({ address, error }) => {
+      if (!error && address) {
+        window.localStorage.setItem("trigger_vault_wallet", address);
+        setWalletAddress(address);
+      }
+    });
+    return () => {
+      window.clearTimeout(restoreWallet);
+      watcher.stop();
     };
   }, []);
 
@@ -263,7 +349,8 @@ export default function App() {
   useEffect(() => {
     if (!walletAddress) return;
     const balanceRefresh = window.setTimeout(
-      () => void fetchWalletBalance(walletAddress),
+      () =>
+        void fetchWalletBalance(walletAddress).catch(() => setWalletBalance(0)),
       0,
     );
     return () => window.clearTimeout(balanceRefresh);
@@ -271,19 +358,36 @@ export default function App() {
 
   const connectWallet = async (): Promise<void> => {
     setMessage("");
+    setWalletConnecting(true);
     try {
-      const connection = await isConnected();
-      if (!connection.isConnected) {
-        throw new Error("Freighter is not installed or unavailable");
-      }
       const access = await requestAccess();
-      if (access.error || !access.address) {
-        throw new Error(access.error || "Wallet access rejected");
+      const address = parseFreighterAddress(access);
+      if (typeof access === "object" && access !== null && "error" in access && access.error) {
+        throw new Error(safeMessage(access.error) || "Wallet access rejected");
       }
-      setWalletAddress(access.address);
+      if (!address) throw new Error("Freighter did not return an account address");
+      window.localStorage.setItem("trigger_vault_wallet", address);
+      setWalletAddress(address);
+      await fetchWalletBalance(address);
+      showNotice(
+        "success",
+        `Cüzdan başarıyla bağlandı: ${shortAddress(address, 8, 6)}`,
+        "Freighter bağlantısı kullanıma hazır.",
+      );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Wallet connection failed");
+      const detail = safeMessage(error) || "Wallet connection failed";
+      setMessage(detail);
+      showNotice("error", detail, "Freighter cüzdan bağlantısı kurulamadı.");
+    } finally {
+      setWalletConnecting(false);
     }
+  };
+
+  const disconnectWallet = (): void => {
+    window.localStorage.removeItem("trigger_vault_wallet");
+    setWalletAddress("");
+    setWalletBalance(0);
+    showNotice("info", "Cüzdan bağlantısı kesildi", "Freighter oturumu terminalden kaldırıldı.");
   };
 
   const fillBalancePercentage = (percentage: number): void => {
@@ -305,22 +409,26 @@ export default function App() {
       .setTimeout(60)
       .build();
 
+    showNotice("info", "Simülasyon çalışıyor", "Soroban işlem koşulları doğrulanıyor...");
     const simulation = await server.simulateTransaction(transaction);
     if (!rpc.Api.isSimulationSuccess(simulation)) {
+      showNotice("error", "Simülasyon başarısız oldu", "Emir zincir kurallarını veya piyasa koşullarını karşılamadı.");
       throw new Error(
         rpc.Api.isSimulationError(simulation)
-          ? simulation.error
+          ? safeMessage(simulation.error)
           : `${method} simulation failed`,
       );
     }
 
     setLifecycleStep(1);
+    showNotice("info", "İmza bekleniyor", "Freighter imza penceresi bekleniyor...");
     const prepared = rpc.assembleTransaction(transaction, simulation).build();
     const signed = await signTransaction(prepared.toXDR(), {
       networkPassphrase: NETWORK_PASSPHRASE,
       address: walletAddress,
     });
     if (signed.error || !signed.signedTxXdr) {
+      showNotice("error", "İmza reddedildi", "İmza cüzdan tarafından reddedildi.");
       throw new Error("Freighter signature was rejected");
     }
 
@@ -335,6 +443,7 @@ export default function App() {
     }
 
     setLifecycleStep(3);
+    showNotice("info", "Defter onayı bekleniyor", "İşlem deftere yazılıyor...");
     const result = await waitForTransaction(submission.hash);
     if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
       throw new Error(`Transaction failed: ${submission.hash}`);
@@ -346,15 +455,27 @@ export default function App() {
     event.preventDefault();
     setMessage("");
     if (!walletAddress) {
-      setMessage("Connect Freighter before creating an order.");
+      const detail = "Lütfen önce sağ üstten Freighter cüzdanınızı bağlayın!";
+      setMessage(detail);
+      showNotice("error", detail, "Emir oluşturma işlemi durduruldu.");
       return;
     }
     if (numericAmount <= 0 || numericMinOut <= 0) {
-      setMessage("Amount and minimum output must be greater than zero.");
+      const detail = "Amount and minimum output must be greater than zero.";
+      setMessage(detail);
+      showNotice("error", "Invalid order values", detail);
+      return;
+    }
+    if (numericAmount > walletBalance) {
+      const detail = `Yetersiz bakiye: kullanılabilir ${walletBalance.toFixed(7)} XLM.`;
+      setMessage(detail);
+      showNotice("error", "Yetersiz bakiye", detail);
       return;
     }
     if (numericFeeBps > 1_000) {
-      setMessage("Keeper fee cannot exceed 1,000 bps.");
+      const detail = "Keeper fee cannot exceed 1,000 bps.";
+      setMessage(detail);
+      showNotice("error", "Invalid keeper fee", detail);
       return;
     }
 
@@ -362,7 +483,9 @@ export default function App() {
       CONFIGURED_TOKEN_OUT ||
       orders.find((order) => order.tokenOut !== NATIVE_XLM_SAC)?.tokenOut;
     if (!tokenOut) {
-      setMessage("Configure VITE_TOKEN_OUT_CONTRACT_ID before creating an order.");
+      const detail = "Configure VITE_TOKEN_OUT_CONTRACT_ID before creating an order.";
+      setMessage(detail);
+      showNotice("error", "Output token missing", detail);
       return;
     }
 
@@ -378,9 +501,16 @@ export default function App() {
       setLifecycle("complete");
       await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
       setMessage(`Order confirmed on ledger: ${hash}`);
+      showNotice(
+        "success",
+        "Emir başarıyla oluşturuldu!",
+        `Tx: ${shortAddress(hash, 10, 8)}`,
+      );
     } catch (error) {
       setLifecycle("error");
-      setMessage(error instanceof Error ? error.message : "Order transaction failed");
+      const detail = safeMessage(error) || "Order transaction failed";
+      setMessage(detail);
+      showNotice("error", "Order failed", detail);
     }
   };
 
@@ -398,14 +528,33 @@ export default function App() {
       setMessage(
         `Cancellation confirmed: ${hash} | Balance change: ${(balanceAfter - balanceBefore).toFixed(7)} XLM`,
       );
+      showNotice(
+        "success",
+        "İptal başarılı, fonlar cüzdana aktarıldı",
+        `Bakiye değişimi ${(balanceAfter - balanceBefore).toFixed(7)} XLM`,
+      );
     } catch (error) {
       setLifecycle("error");
-      setMessage(error instanceof Error ? error.message : "Cancellation failed");
+      const detail = safeMessage(error) || "Cancellation failed";
+      setMessage(detail);
+      showNotice("error", "Cancellation failed", detail);
     }
   };
 
   return (
     <div className="min-h-screen bg-zinc-950 text-slate-200 selection:bg-cyan-500/30">
+      <style>{`@keyframes toast-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }`}</style>
+      <div className="fixed right-4 top-4 z-50 flex w-[min(390px,calc(100vw-2rem))] flex-col gap-2">
+        {notices.map((notice) => (
+          <ToastNotice
+            key={notice.id}
+            notice={notice}
+            onClose={() =>
+              setNotices((current) => current.filter((item) => item.id !== notice.id))
+            }
+          />
+        ))}
+      </div>
       <header className="border-b border-slate-800 bg-slate-950/95">
         <div className="mx-auto flex max-w-[1600px] items-center justify-between px-4 py-3 lg:px-6">
           <div className="flex items-center gap-3">
@@ -420,10 +569,24 @@ export default function App() {
               <p className="font-mono text-[10px] text-slate-500">SOROBAN EXECUTION TERMINAL</p>
             </div>
           </div>
-          <button onClick={connectWallet} className="flex items-center gap-2 border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-200 hover:border-cyan-500/50">
-            <Wallet className="h-4 w-4 text-cyan-400" />
-            {walletAddress ? shortAddress(walletAddress) : "CONNECT FREIGHTER"}
-          </button>
+          <div className="flex items-center gap-2">
+            {walletAddress && <span className="hidden font-mono text-[10px] text-slate-500 sm:inline">BAL {walletBalance.toFixed(4)} XLM</span>}
+            {walletAddress ? (
+              <div className="flex items-stretch border border-slate-700 bg-slate-900">
+                <div className="flex items-center gap-2 px-3 py-2 font-mono text-xs text-slate-200">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <Wallet className="h-4 w-4 text-cyan-400" />
+                  {shortAddress(walletAddress, 8, 6)}
+                </div>
+                <button onClick={disconnectWallet} className="flex items-center gap-1.5 border-l border-slate-700 px-3 font-mono text-[10px] text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"><LogOut className="h-3.5 w-3.5" />DISCONNECT</button>
+              </div>
+            ) : (
+              <button onClick={connectWallet} disabled={walletConnecting} className="flex items-center gap-2 border border-cyan-500/50 bg-slate-900 px-3 py-2 font-mono text-xs text-cyan-200 hover:border-cyan-400 disabled:cursor-wait disabled:opacity-70">
+                <Wallet className="h-4 w-4 text-cyan-400" />
+                {walletConnecting ? "CONNECTING..." : "CONNECT FREIGHTER"}
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -510,4 +673,24 @@ function Field({ label, suffix, value, onChange }: { label: string; suffix: stri
 
 function Breakdown({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
   return <div className={`flex items-center justify-between py-1.5 ${strong ? "mt-1 border-t border-slate-800 pt-2.5" : ""}`}><span className="text-slate-500">{label}</span><span className={strong ? "text-cyan-300" : "text-slate-300"}>{value}</span></div>;
+}
+
+function ToastNotice({ notice, onClose }: { notice: Notice; onClose: () => void }) {
+  const success = notice.type === "success";
+  const info = notice.type === "info";
+  return (
+    <div className={`animate-[toast-in_180ms_ease-out] border bg-slate-950 shadow-2xl ${success ? "border-emerald-500/50 shadow-emerald-950/40" : info ? "border-cyan-500/50 shadow-cyan-950/40" : "border-rose-500/50 shadow-rose-950/40"}`} role="status" aria-live="polite">
+      <div className="flex items-start gap-3 p-4">
+        <div className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full ${success ? "bg-emerald-500/15 text-emerald-400" : info ? "bg-cyan-500/15 text-cyan-400" : "bg-rose-500/15 text-rose-400"}`}>
+          {success ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-white">{notice.title}</p>
+          <p className="mt-1 break-words font-mono text-[10px] leading-relaxed text-slate-400">{notice.detail}</p>
+        </div>
+        <button onClick={onClose} className="text-slate-600 hover:text-white" aria-label="Close notification"><X className="h-4 w-4" /></button>
+      </div>
+      <div className={`h-0.5 ${success ? "bg-emerald-400" : info ? "bg-cyan-400" : "bg-rose-400"}`} />
+    </div>
+  );
 }
