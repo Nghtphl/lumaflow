@@ -1,9 +1,16 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
-    Address, Env, Vec,
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token, vec,
+    Address, Env, IntoVal, Symbol, Vec,
 };
 
+/// Subset of the SoroswapRouter interface that TriggerVault depends on.
+///
+/// `swap_exact_tokens_for_tokens` is the AMM entry point. `router_pair_for`
+/// resolves the pool contract that the router will move `amount_in` into, which
+/// the vault needs in advance in order to authorize that transfer (see
+/// `execute_order`).
 #[contractclient(name = "RouterClient")]
 pub trait RouterInterface {
     fn swap_exact_tokens_for_tokens(
@@ -14,6 +21,8 @@ pub trait RouterInterface {
         to: Address,
         deadline: u64,
     ) -> Vec<i128>;
+
+    fn router_pair_for(env: Env, token_a: Address, token_b: Address) -> Address;
 }
 
 #[contracterror]
@@ -30,6 +39,7 @@ pub enum Error {
     IdenticalTokens = 8,
     InvalidBalanceDelta = 9,
     AlreadyInitialized = 10,
+    InputNotSpent = 11,
 }
 
 // Soroban ledgers close approximately every five seconds. Active protocol state is
@@ -39,6 +49,7 @@ pub enum Error {
 pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
 pub(crate) const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
 pub(crate) const MAX_FEE_BPS: u32 = 1_000;
+pub(crate) const SWAP_DEADLINE_WINDOW: u64 = 300;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[contracttype]
@@ -229,51 +240,82 @@ impl TriggerVault {
         Self::bump_persistent_key(&env, &DataKey::Order(order_id));
 
         let router = Self::get_router(env.clone())?;
+        let vault = env.current_contract_address();
 
-        // `min_amount_out` is the limit-order boundary: execution is valid only
-        // when this transaction delivers at least that amount to the vault.
-        // Measure the actual balance delta instead of trusting router return data.
-        let token_out_client = token::Client::new(&env, &order.token_out);
-        let balance_before = token_out_client.balance(&env.current_contract_address());
-
-        // 1. Kilitli token_in'i Router adresine transfer et
         let token_in_client = token::Client::new(&env, &order.token_in);
-        token_in_client.transfer(&env.current_contract_address(), &router, &order.amount_in);
+        let token_out_client = token::Client::new(&env, &order.token_out);
 
-        // 2. Build the swap parameters and invoke the Router
+        // Both legs are measured as balance deltas on this contract. The router's
+        // return value is never trusted, and pre-existing balances held for other
+        // open orders cancel out of the delta.
+        let token_in_before = token_in_client.balance(&vault);
+        let token_out_before = token_out_client.balance(&vault);
+
+        let router_client = RouterClient::new(&env, &router);
+
+        // SoroswapRouter does not take custody of the input: it calls
+        // `token_in.transfer(from = to, to = pair, amount_in)` itself, one frame
+        // below this call. An invoker's authorization is only implied for the
+        // calls it makes directly, so that nested transfer would fail unless the
+        // vault authorizes it up front. The entry is scoped as tightly as the
+        // auth framework allows: this token, this pool, this exact amount, and no
+        // sub-invocations of its own. A wrong pool address cannot redirect funds
+        // — the router computes the real recipient, and a mismatch simply fails
+        // the authorization and reverts the whole transaction.
+        let pair = router_client.router_pair_for(&order.token_in, &order.token_out);
+        env.authorize_as_current_contract(vec![
+            &env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: order.token_in.clone(),
+                    fn_name: Symbol::new(&env, "transfer"),
+                    args: (vault.clone(), pair, order.amount_in).into_val(&env),
+                },
+                sub_invocations: vec![&env],
+            }),
+        ]);
+
         let mut path: Vec<Address> = Vec::new(&env);
         path.push_back(order.token_in.clone());
         path.push_back(order.token_out.clone());
 
-        let deadline = env.ledger().timestamp() + 300;
-        let router_client = RouterClient::new(&env, &router);
+        let deadline = env.ledger().timestamp() + SWAP_DEADLINE_WINDOW;
         router_client.swap_exact_tokens_for_tokens(
             &order.amount_in,
             &order.min_amount_out,
             &path,
-            &env.current_contract_address(),
+            &vault,
             &deadline,
         );
 
-        let balance_after = token_out_client.balance(&env.current_contract_address());
-        let amount_out = balance_after
-            .checked_sub(balance_before)
+        // The collateral must have left the vault exactly once. This rejects a
+        // router that reports a swap without taking the input, which would
+        // otherwise leave unaccounted collateral stranded in the vault.
+        let token_in_spent = token_in_before
+            .checked_sub(token_in_client.balance(&vault))
+            .ok_or(Error::InvalidBalanceDelta)?;
+        if token_in_spent != order.amount_in {
+            return Err(Error::InputNotSpent);
+        }
+
+        let amount_out = token_out_client
+            .balance(&vault)
+            .checked_sub(token_out_before)
             .ok_or(Error::InvalidBalanceDelta)?;
 
         if amount_out < order.min_amount_out {
             return Err(Error::SlippageExceeded);
         }
 
-        // 3. Calculate and distribute the keeper bounty
+        // Keeper bounty is paid from the realized output, never from the limit.
         let fee_amount = (amount_out * (order.fee_bps as i128)) / 10_000;
         let user_amount = amount_out - fee_amount;
 
         if fee_amount > 0 {
-            token_out_client.transfer(&env.current_contract_address(), &executor, &fee_amount);
+            token_out_client.transfer(&vault, &executor, &fee_amount);
         }
-        token_out_client.transfer(&env.current_contract_address(), &order.owner, &user_amount);
+        token_out_client.transfer(&vault, &order.owner, &user_amount);
 
-        // 4. Update the stored order state
         order.status = OrderStatus::Executed;
         env.storage().persistent().set(&DataKey::Order(order_id), &order);
         Self::bump_instance_ttl(&env);

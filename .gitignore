@@ -4,3 +4,8 @@ target/
 .DS_Store
 .env
 .references/
+
+# FUSE leftovers from editing over a mounted filesystem
+.fuse_hidden*
+.vercel
+.env*

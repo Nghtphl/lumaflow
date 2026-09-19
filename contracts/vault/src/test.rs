@@ -2,41 +2,27 @@
 use super::*;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{storage::Persistent as _, Address as _},
-    Env, Vec,
+    testutils::{storage::Persistent as _, Address as _, MockAuth, MockAuthInvoke},
+    Env, IntoVal, Vec,
 };
 
+/// Router double that behaves like SoroswapRouter: it authorizes against `to`,
+/// **pulls** `amount_in` out of `to` into the pool, and only then pays the
+/// output. The pull is what makes this a meaningful test — it exercises the
+/// nested-transfer authorization that a real AMM requires, which a router that
+/// pays out of its own balance would never surface.
+///
+/// The contract doubles as its own pair, mirroring a Uniswap-style pool holding
+/// both reserves.
 #[contract]
-pub struct MockRouter;
+pub struct PullingRouter;
 
 #[contractimpl]
-impl MockRouter {
-    pub fn swap_exact_tokens_for_tokens(
-        env: Env,
-        _amount_in: i128,
-        _amount_out_min: i128,
-        path: Vec<Address>,
-        to: Address,
-        _deadline: u64,
-    ) -> Vec<i128> {
-        let token_out_addr = path.get(1).unwrap();
-        let token_out_client = token::Client::new(&env, &token_out_addr);
-
-        let simulated_out: i128 = 1000;
-        token_out_client.transfer(&env.current_contract_address(), &to, &simulated_out);
-
-        let mut res = Vec::new(&env);
-        res.push_back(_amount_in);
-        res.push_back(simulated_out);
-        res
+impl PullingRouter {
+    pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
+        env.current_contract_address()
     }
-}
 
-#[contract]
-pub struct MisreportingRouter;
-
-#[contractimpl]
-impl MisreportingRouter {
     pub fn swap_exact_tokens_for_tokens(
         env: Env,
         amount_in: i128,
@@ -45,17 +31,125 @@ impl MisreportingRouter {
         to: Address,
         _deadline: u64,
     ) -> Vec<i128> {
-        let token_out_addr = path.get(1).unwrap();
-        let token_out_client = token::Client::new(&env, &token_out_addr);
+        to.require_auth();
+
+        let pair = env.current_contract_address();
+        let token_in = token::Client::new(&env, &path.get(0).unwrap());
+        token_in.transfer(&to, &pair, &amount_in);
+
+        let simulated_out: i128 = amount_in * 2;
+        let token_out = token::Client::new(&env, &path.get(1).unwrap());
+        token_out.transfer(&pair, &to, &simulated_out);
+
+        let mut res = Vec::new(&env);
+        res.push_back(amount_in);
+        res.push_back(simulated_out);
+        res
+    }
+}
+
+/// Takes the input like a real router but delivers less than it claims. The
+/// vault must believe its own balance delta, not the returned amounts.
+#[contract]
+pub struct MisreportingRouter;
+
+#[contractimpl]
+impl MisreportingRouter {
+    pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
+        env.current_contract_address()
+    }
+
+    pub fn swap_exact_tokens_for_tokens(
+        env: Env,
+        amount_in: i128,
+        _amount_out_min: i128,
+        path: Vec<Address>,
+        to: Address,
+        _deadline: u64,
+    ) -> Vec<i128> {
+        to.require_auth();
+
+        let pair = env.current_contract_address();
+        token::Client::new(&env, &path.get(0).unwrap()).transfer(&to, &pair, &amount_in);
 
         // Transfer less than the limit while claiming a sufficient router output.
-        // The vault must use its real balance delta and reject the execution.
-        token_out_client.transfer(&env.current_contract_address(), &to, &800);
+        token::Client::new(&env, &path.get(1).unwrap()).transfer(&pair, &to, &800);
 
         let mut res = Vec::new(&env);
         res.push_back(amount_in);
         res.push_back(1_000);
         res
+    }
+}
+
+/// Pays the output without ever taking the input. Left unchecked this would
+/// strand the order's collateral in the vault, unattributed to any order.
+#[contract]
+pub struct NonPullingRouter;
+
+#[contractimpl]
+impl NonPullingRouter {
+    pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
+        env.current_contract_address()
+    }
+
+    pub fn swap_exact_tokens_for_tokens(
+        env: Env,
+        amount_in: i128,
+        _amount_out_min: i128,
+        path: Vec<Address>,
+        to: Address,
+        _deadline: u64,
+    ) -> Vec<i128> {
+        let pair = env.current_contract_address();
+        let simulated_out: i128 = amount_in * 2;
+        token::Client::new(&env, &path.get(1).unwrap()).transfer(&pair, &to, &simulated_out);
+
+        let mut res = Vec::new(&env);
+        res.push_back(amount_in);
+        res.push_back(simulated_out);
+        res
+    }
+}
+
+struct Fixture {
+    contract_id: Address,
+    owner: Address,
+    executor: Address,
+    token_in: Address,
+    token_out: Address,
+    router_id: Address,
+}
+
+/// Vault initialized against `router`, with `token_in` minted to the owner and
+/// `token_out` liquidity sitting in the pool.
+fn setup(env: &Env, router_id: Address, owner_balance: i128, pool_liquidity: i128) -> Fixture {
+    env.mock_all_auths();
+
+    let admin = Address::generate(env);
+    let contract_id = env.register(TriggerVault, ());
+    let client = TriggerVaultClient::new(env, &contract_id);
+    client.init(&admin, &router_id);
+
+    let owner = Address::generate(env);
+    let executor = Address::generate(env);
+    let token_admin = Address::generate(env);
+
+    let token_in = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token_out = env.register_stellar_asset_contract_v2(token_admin).address();
+
+    token::StellarAssetClient::new(env, &token_in).mint(&owner, &owner_balance);
+    token::StellarAssetClient::new(env, &token_out).mint(&router_id, &pool_liquidity);
+
+    Fixture {
+        contract_id,
+        owner,
+        executor,
+        token_in,
+        token_out,
+        router_id,
     }
 }
 
@@ -65,11 +159,11 @@ fn test_create_and_cancel_order() {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let mock_router_id = env.register(MockRouter, ());
+    let router_id = env.register(PullingRouter, ());
 
     let contract_id = env.register(TriggerVault, ());
     let client = TriggerVaultClient::new(&env, &contract_id);
-    client.init(&admin, &mock_router_id);
+    client.init(&admin, &router_id);
 
     let owner = Address::generate(&env);
     let token_admin = Address::generate(&env);
@@ -96,42 +190,82 @@ fn test_create_and_cancel_order() {
 #[test]
 fn test_execute_order_with_keeper_bounty() {
     let env = Env::default();
-    env.mock_all_auths();
+    let router_id = env.register(PullingRouter, ());
+    let f = setup(&env, router_id, 500, 2_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
 
-    let admin = Address::generate(&env);
-    let mock_router_id = env.register(MockRouter, ());
+    let token_in_client = token::Client::new(&env, &f.token_in);
+    let token_out_client = token::Client::new(&env, &f.token_out);
 
-    let contract_id = env.register(TriggerVault, ());
-    let client = TriggerVaultClient::new(&env, &contract_id);
-    client.init(&admin, &mock_router_id);
-
-    let owner = Address::generate(&env);
-    let executor = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-
-    let sac_in = env.register_stellar_asset_contract_v2(token_admin.clone());
-    let token_in = sac_in.address();
-    let token_in_admin = token::StellarAssetClient::new(&env, &token_in);
-    let token_in_client = token::Client::new(&env, &token_in);
-
-    let sac_out = env.register_stellar_asset_contract_v2(token_admin);
-    let token_out = sac_out.address();
-    let token_out_admin = token::StellarAssetClient::new(&env, &token_out);
-    let token_out_client = token::Client::new(&env, &token_out);
-
-    token_in_admin.mint(&owner, &500);
-    token_out_admin.mint(&mock_router_id, &2000);
-
-    let order_id = client.create_order(&owner, &token_in, &token_out, &500, &900, &500);
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &900, &500);
     assert_eq!(order_id, 1);
 
-    client.execute_order(&1, &executor);
+    client.execute_order(&order_id, &f.executor);
 
+    assert_eq!(token_out_client.balance(&f.executor), 50);
+    assert_eq!(token_out_client.balance(&f.owner), 950);
+    assert_eq!(token_in_client.balance(&f.router_id), 500);
+    assert_eq!(token_in_client.balance(&f.contract_id), 0);
+    assert_eq!(token_out_client.balance(&f.contract_id), 0);
+    assert_eq!(client.get_order(&order_id).status, OrderStatus::Executed);
+}
+
+/// The regression test for the router authorization pattern.
+///
+/// Every other execution test runs under `mock_all_auths`, which satisfies
+/// *any* `require_auth` — including the vault's own signature on the transfer
+/// that the router performs one frame below it. That blanket mock is exactly
+/// what hides a missing `authorize_as_current_contract` until a real testnet
+/// transaction fails. Here the only mocked authorization is the keeper's
+/// top-level call, so the nested transfer can only succeed if `execute_order`
+/// issued the invoker-contract entry itself.
+#[test]
+fn test_execute_order_authorizes_router_pull_with_scoped_auth() {
+    let env = Env::default();
+    let router_id = env.register(PullingRouter, ());
+    let f = setup(&env, router_id, 500, 2_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &900, &500);
+
+    let executor = f.executor.clone();
+    env.mock_auths(&[MockAuth {
+        address: &executor,
+        invoke: &MockAuthInvoke {
+            contract: &f.contract_id,
+            fn_name: "execute_order",
+            args: (order_id, executor.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    client.execute_order(&order_id, &executor);
+
+    let token_in_client = token::Client::new(&env, &f.token_in);
+    let token_out_client = token::Client::new(&env, &f.token_out);
+    assert_eq!(token_in_client.balance(&f.contract_id), 0);
+    assert_eq!(token_in_client.balance(&f.router_id), 500);
+    assert_eq!(token_out_client.balance(&f.owner), 950);
     assert_eq!(token_out_client.balance(&executor), 50);
-    assert_eq!(token_out_client.balance(&owner), 950);
-    assert_eq!(token_in_client.balance(&mock_router_id), 500);
-    assert_eq!(token_in_client.balance(&contract_id), 0);
-    assert_eq!(client.get_order(&1).status, OrderStatus::Executed);
+    assert_eq!(client.get_order(&order_id).status, OrderStatus::Executed);
+}
+
+#[test]
+fn test_rejects_router_that_does_not_take_the_input() {
+    let env = Env::default();
+    let router_id = env.register(NonPullingRouter, ());
+    let f = setup(&env, router_id, 500, 2_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &900, &100);
+
+    assert!(client.try_execute_order(&order_id, &f.executor).is_err());
+
+    let token_in_client = token::Client::new(&env, &f.token_in);
+    let token_out_client = token::Client::new(&env, &f.token_out);
+    assert_eq!(token_in_client.balance(&f.contract_id), 500);
+    assert_eq!(token_out_client.balance(&f.owner), 0);
+    assert_eq!(client.get_order(&order_id).status, OrderStatus::Active);
 }
 
 #[test]
@@ -271,37 +405,22 @@ fn test_critical_persistent_entries_have_extended_ttl() {
 #[test]
 fn test_slippage_uses_actual_received_balance_and_reverts_atomically() {
     let env = Env::default();
-    env.mock_all_auths();
-
-    let admin = Address::generate(&env);
     let router_id = env.register(MisreportingRouter, ());
-    let contract_id = env.register(TriggerVault, ());
-    let client = TriggerVaultClient::new(&env, &contract_id);
-    client.init(&admin, &router_id);
+    let f = setup(&env, router_id, 500, 2_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
 
-    let owner = Address::generate(&env);
-    let executor = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_in = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-    let token_out = env.register_stellar_asset_contract_v2(token_admin).address();
-    let token_in_admin = token::StellarAssetClient::new(&env, &token_in);
-    let token_out_admin = token::StellarAssetClient::new(&env, &token_out);
-    let token_in_client = token::Client::new(&env, &token_in);
-    let token_out_client = token::Client::new(&env, &token_out);
+    let token_in_client = token::Client::new(&env, &f.token_in);
+    let token_out_client = token::Client::new(&env, &f.token_out);
 
-    token_in_admin.mint(&owner, &500);
-    token_out_admin.mint(&router_id, &2_000);
-    let order_id = client.create_order(&owner, &token_in, &token_out, &500, &900, &100);
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &900, &100);
 
-    assert!(client.try_execute_order(&order_id, &executor).is_err());
+    assert!(client.try_execute_order(&order_id, &f.executor).is_err());
 
     // A failed Soroban invocation is atomic: both router transfers roll back and
     // the order remains cancellable with the original input still in the vault.
-    assert_eq!(token_in_client.balance(&contract_id), 500);
-    assert_eq!(token_in_client.balance(&router_id), 0);
-    assert_eq!(token_out_client.balance(&contract_id), 0);
-    assert_eq!(token_out_client.balance(&router_id), 2_000);
+    assert_eq!(token_in_client.balance(&f.contract_id), 500);
+    assert_eq!(token_in_client.balance(&f.router_id), 0);
+    assert_eq!(token_out_client.balance(&f.contract_id), 0);
+    assert_eq!(token_out_client.balance(&f.router_id), 2_000);
     assert_eq!(client.get_order(&order_id).status, OrderStatus::Active);
 }

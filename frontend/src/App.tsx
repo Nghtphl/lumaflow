@@ -1,4 +1,4 @@
-import { Component, useEffect, useMemo, useRef, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 import {
   Activity,
@@ -23,6 +23,7 @@ import {
   signTransaction,
   WatchWalletChanges,
 } from "@stellar/freighter-api";
+import AnchorPanel from "./components/AnchorPanel";
 import {
   Account,
   Address,
@@ -41,13 +42,25 @@ const CONTRACT_ID =
   "CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB";
 const RPC_URL =
   import.meta.env.VITE_RPC_URL || "https://soroban-testnet.stellar.org";
-const HORIZON_URL = "https://horizon-testnet.stellar.org";
+const HORIZON_URL =
+  (import.meta.env.VITE_HORIZON_URL as string | undefined)?.trim() ||
+  "https://horizon-testnet.stellar.org";
 const STROOPS_PER_XLM = 10_000_000;
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const NATIVE_XLM_SAC =
   "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+// Collateral is the anchor's USDC, wrapped as a Soroban token by its Stellar
+// Asset Contract. This is the bridge between the classic asset the anchor pays
+// out and the token address `create_order` speaks — the vault is token-generic,
+// so nothing on-chain had to change for this.
+const USDC_SAC =
+  (import.meta.env.VITE_USDC_SAC_ID as string | undefined)?.trim() ||
+  "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+const COLLATERAL_SYMBOL = "USDC";
+const TARGET_SYMBOL = "XLM";
 const CONFIGURED_TOKEN_OUT =
-  (import.meta.env.VITE_TOKEN_OUT_CONTRACT_ID as string | undefined)?.trim() || "";
+  (import.meta.env.VITE_TOKEN_OUT_CONTRACT_ID as string | undefined)?.trim() ||
+  NATIVE_XLM_SAC;
 const READ_ONLY_SOURCE =
   "GBICM7WA6FIVCFRCPM3ZIGNF5CZC5VRCU4IV4DJPQLWIALVQ6IN6OI6A";
 const server = new rpc.Server(RPC_URL);
@@ -67,7 +80,13 @@ interface OrderItem {
   status: OrderStatus;
   tokenIn: string;
   tokenOut: string;
-  createdAt: string;
+  /**
+   * When this terminal first observed the order. The vault does not store a
+   * creation timestamp on chain, so orders that already existed when the page
+   * loaded have none — showing a fabricated one would be a lie the table tells
+   * on every render.
+   */
+  observedAt: string | null;
   txHash?: string;
 }
 
@@ -302,8 +321,14 @@ function App() {
   const [walletAddress, setWalletAddress] = useState("");
   const [walletConnecting, setWalletConnecting] = useState(false);
   const [walletBalance, setWalletBalance] = useState(0);
-  const [amountIn, setAmountIn] = useState("25");
-  const [minAmountOut, setMinAmountOut] = useState("3.8");
+  const [usdcBalance, setUsdcBalance] = useState(0);
+  // TRY per 1 USDC, published by the anchor's SEP-38 quote server. It is what
+  // lets the order form talk in lira instead of asking the user to think in
+  // stablecoin ratios.
+  const [tryPerUsdc, setTryPerUsdc] = useState(0);
+  const [rateSource, setRateSource] = useState("");
+  const [amountIn, setAmountIn] = useState("10");
+  const [minAmountOut, setMinAmountOut] = useState("38");
   const [feeBps, setFeeBps] = useState("100");
   const [slippage, setSlippage] = useState(0.5);
   const [tab, setTab] = useState<OrderTab>("active");
@@ -320,6 +345,9 @@ function App() {
   const [message, setMessage] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
   const operationLock = useRef(false);
+  const anchorRefresh = useRef<(() => void) | null>(null);
+  const observedAt = useRef(new Map<number, string>());
+  const hasLoadedOrders = useRef(false);
 
   const showNotice = (
     type: NoticeType,
@@ -348,24 +376,31 @@ function App() {
     );
   };
 
+  // The anchor is the only source of a TRY rate in this app; nothing here
+  // invents a price.
+  const handleAnchorRate = useCallback((rate: number, label: string): void => {
+    setTryPerUsdc(rate);
+    setRateSource(label);
+  }, []);
+
   const numericAmount = parseDecimal(amountIn);
   const numericMinOut = parseDecimal(minAmountOut);
   const numericFeeBps = parseDecimal(feeBps);
-  const rawKeeperReward = Math.floor(
-    numericAmount * STROOPS_PER_XLM * (numericFeeBps / 10_000),
-  );
-  const keeperReward = Number.isFinite(rawKeeperReward) ? rawKeeperReward : 0;
-  const rawNetSwapAmount = numericAmount * (1 - numericFeeBps / 10_000);
-  const netSwapAmount = Number.isFinite(rawNetSwapAmount)
-    ? rawNetSwapAmount
+  // execute_order swaps all collateral; the keeper receives this percentage
+  // of the realized output. The output amount is unknown until execution.
+  const keeperFeePercent = Number.isFinite(numericFeeBps)
+    ? numericFeeBps / 100
     : 0;
+  // Collateral is USDC and the target asset is XLM, so the trigger the user
+  // cares about is the USDC paid per XLM received.
   const rawEffectivePrice =
     numericAmount > 0 && numericMinOut > 0
-      ? numericMinOut / numericAmount
+      ? numericAmount / numericMinOut
       : 0;
   const effectivePrice = Number.isFinite(rawEffectivePrice)
     ? rawEffectivePrice
     : 0;
+  const triggerPriceTry = effectivePrice * tryPerUsdc;
 
   const safeOrders = useMemo(
     () =>
@@ -397,7 +432,6 @@ function App() {
     if (!Number.isSafeInteger(count) || count < 0 || count > 10_000) {
       throw new Error(`Invalid on-chain order count: ${safeMessage(count)}`);
     }
-    const fetchedAt = Date.now();
     const liveOrders = await Promise.all(
       Array.from({ length: count }, async (_, index) => {
         const raw = await simulateRead<Record<string, unknown>>(
@@ -414,23 +448,27 @@ function App() {
           minAmountOut: Number(raw.min_amount_out as bigint) / STROOPS_PER_XLM,
           feeBps: Number(raw.fee_bps),
           status: status === 0 ? "Active" : status === 1 ? "Executed" : "Cancelled",
-          createdAt: new Date(
-            fetchedAt - Math.max(0, count - (index + 1)) * 60_000,
-          ).toISOString(),
+          observedAt: null,
         } satisfies OrderItem;
       }),
     );
-    setOrders((current) => {
-      const knownTimestamps = new Map(
-        current.map((order) => [order.id, order.createdAt]),
-      );
-      return liveOrders
+    // Record a real observation time for orders that appear while the terminal
+    // is open; orders that predate this session stay honest about not knowing.
+    const seenAt = new Date().toISOString();
+    for (const order of liveOrders) {
+      if (hasLoadedOrders.current && !observedAt.current.has(order.id)) {
+        observedAt.current.set(order.id, seenAt);
+      }
+    }
+    hasLoadedOrders.current = true;
+    setOrders(
+      liveOrders
         .map((order) => ({
           ...order,
-          createdAt: knownTimestamps.get(order.id) || order.createdAt,
+          observedAt: observedAt.current.get(order.id) || null,
         }))
-        .reverse();
-    });
+        .reverse(),
+    );
   };
 
   const fetchTelemetry = async (): Promise<void> => {
@@ -604,20 +642,18 @@ function App() {
   };
 
   const fillBalancePercentage = (percentage: number): void => {
-    if (percentage === 100) {
-      if (walletBalance <= 2) {
-        setAmountIn("0.0000000");
-        showNotice(
-          "error",
-          "Insufficient available balance",
-          "At least 2 XLM must be reserved for gas fees and Stellar base reserve.",
-        );
-        return;
-      }
-      setAmountIn(Math.max(0, walletBalance - 2).toFixed(7));
+    // Collateral is USDC, so no XLM reserve has to be held back here — but the
+    // account still needs XLM for fees, and that is checked at submit time.
+    if (usdcBalance <= 0) {
+      setAmountIn("0.0000000");
+      showNotice(
+        "error",
+        "No USDC collateral",
+        `Deposit TRY through ${COLLATERAL_SYMBOL} funding before placing an order.`,
+      );
       return;
     }
-    setAmountIn(((walletBalance * percentage) / 100).toFixed(7));
+    setAmountIn(((usdcBalance * percentage) / 100).toFixed(7));
   };
 
   const assertFreighterTestnet = async (): Promise<void> => {
@@ -710,10 +746,17 @@ function App() {
       showNotice("error", "Invalid Order Values", detail);
       return;
     }
-    if (numericAmount > walletBalance) {
-      const detail = `Insufficient balance: Available balance is ${walletBalance.toFixed(7)} XLM.`;
+    if (numericAmount > usdcBalance) {
+      const detail = `Insufficient collateral: Available balance is ${usdcBalance.toFixed(7)} ${COLLATERAL_SYMBOL}. Fund the vault with TRY first.`;
       setMessage(detail);
-      showNotice("error", "Insufficient Balance", detail);
+      showNotice("error", "Insufficient Collateral", detail);
+      return;
+    }
+    if (walletBalance <= 1) {
+      const detail =
+        "At least 1 XLM must stay in the account to cover network fees and the base reserve.";
+      setMessage(detail);
+      showNotice("error", "Insufficient XLM for fees", detail);
       return;
     }
     if (!Number.isInteger(numericFeeBps) || numericFeeBps < 0 || numericFeeBps > 1_000) {
@@ -723,10 +766,16 @@ function App() {
       return;
     }
 
-    const tokenOut =
-      CONFIGURED_TOKEN_OUT ||
-      orders.find((order) => order.tokenOut !== NATIVE_XLM_SAC)?.tokenOut;
-    if (!tokenOut) {
+    const tokenIn = USDC_SAC;
+    const tokenOut = CONFIGURED_TOKEN_OUT;
+    if (!tokenIn) {
+      const detail =
+        "Collateral token contract is not configured (VITE_USDC_SAC_ID).";
+      setMessage(detail);
+      showNotice("error", "Collateral Token Missing", detail);
+      return;
+    }
+    if (!tokenOut || tokenOut === tokenIn) {
       const detail = "Target token contract is not configured.";
       setMessage(detail);
       showNotice("error", "Output Token Missing", detail);
@@ -737,7 +786,7 @@ function App() {
     try {
       const hash = await submitContractOperation("create_order", [
         Address.fromString(walletAddress).toScVal(),
-        Address.fromString(NATIVE_XLM_SAC).toScVal(),
+        Address.fromString(tokenIn).toScVal(),
         Address.fromString(tokenOut).toScVal(),
         nativeToScVal(toStroops(amountIn), { type: "i128" }),
         nativeToScVal(toStroops(minAmountOut), { type: "i128" }),
@@ -745,6 +794,7 @@ function App() {
       ]);
       setLifecycle("complete");
       await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+      anchorRefresh.current?.();
       setAmountIn("");
       setMinAmountOut("");
       setMessage(`Order confirmed on ledger: ${hash}`);
@@ -785,21 +835,23 @@ function App() {
     if (!walletAddress || operationLock.current) return;
     operationLock.current = true;
     setMessage("");
-    const balanceBefore = walletBalance;
+    // Collateral is the SAC-wrapped USDC that came from the anchor, so the
+    // reclaimed amount is the order's own collateral, not an XLM delta.
+    const reclaimed = safeOrders.find((order) => order.id === id)?.amountIn || 0;
     try {
       const hash = await submitContractOperation("cancel_order", [
         xdr.ScVal.scvU32(id),
       ]);
-      const balanceAfter = await fetchWalletBalance(walletAddress);
-      await fetchOrders();
+      await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+      anchorRefresh.current?.();
       setLifecycle("complete");
       setMessage(
-        `Cancellation confirmed: ${hash} | Balance change: ${(balanceAfter - balanceBefore).toFixed(7)} XLM`,
+        `Cancellation confirmed: ${hash} | Reclaimed ${reclaimed.toFixed(7)} ${COLLATERAL_SYMBOL}`,
       );
       showNotice(
         "success",
         `Order #${id} cancelled. Collateral reclaimed.`,
-        `Balance change ${(balanceAfter - balanceBefore).toFixed(7)} XLM`,
+        `${reclaimed.toFixed(7)} ${COLLATERAL_SYMBOL} returned to your wallet`,
         hash,
       );
     } catch (error) {
@@ -857,7 +909,7 @@ function App() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {walletAddress && <span className="hidden font-mono text-[10px] text-slate-500 sm:inline">BAL {(Number(walletBalance) || 0).toFixed(4)} XLM</span>}
+            {walletAddress && <span className="hidden font-mono text-[10px] text-slate-500 sm:inline">BAL {(Number(usdcBalance) || 0).toFixed(2)} {COLLATERAL_SYMBOL} · {(Number(walletBalance) || 0).toFixed(2)} {TARGET_SYMBOL}</span>}
             {walletAddress ? (
               <div className="flex items-stretch border border-slate-700 bg-slate-900">
                 <div className="flex items-center gap-2 px-3 py-2 font-mono text-xs text-slate-200">
@@ -881,7 +933,7 @@ function App() {
         <div className="mx-auto grid max-w-[1600px] grid-cols-2 divide-x divide-slate-800 border-x border-slate-800 md:grid-cols-4">
           <TelemetryCell label="RPC LATENCY" value={telemetry.latency === null ? "—" : `${telemetry.latency} ms`} icon={<Activity className="h-3.5 w-3.5" />} healthy={telemetry.healthy} />
           <TelemetryCell label="LATEST LEDGER" value={telemetry.ledger?.toLocaleString() || "—"} icon={<Gauge className="h-3.5 w-3.5" />} />
-          <TelemetryCell label="ACTIVE VAULT VALUE" value={`${(Number(activeValue) || 0).toFixed(4)} XLM`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
+          <TelemetryCell label="ACTIVE VAULT VALUE" value={`${(Number(activeValue) || 0).toFixed(2)} ${COLLATERAL_SYMBOL}${tryPerUsdc > 0 ? ` · ${(activeValue * tryPerUsdc).toFixed(0)} TL` : ""}`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
           <div className="flex min-w-0 items-center justify-between gap-2 px-4 py-3">
             <div className="min-w-0">
               <p className="text-[9px] uppercase tracking-widest text-slate-500">Contract</p>
@@ -895,15 +947,26 @@ function App() {
       <main className="mx-auto grid max-w-[1600px] grid-cols-1 border-x border-slate-800 lg:grid-cols-[420px_1fr]">
         <section className="border-b border-slate-800 bg-slate-950 p-4 lg:min-h-[calc(100vh-130px)] lg:border-b-0 lg:border-r">
           <div className="mb-5 flex items-center justify-between">
-            <div><h2 className="text-sm font-semibold text-white">Vault Order Placement</h2><p className="mt-1 text-[11px] text-slate-500">Slippage-bounded autonomous execution</p></div>
-            <span className="font-mono text-[10px] text-slate-500">BAL {(Number(walletBalance) || 0).toFixed(4)} XLM</span>
+            <div><h2 className="text-sm font-semibold text-white">Vault Order Placement</h2><p className="mt-1 text-[11px] text-slate-500">Lira-denominated, slippage-bounded autonomous exit</p></div>
+            <span className="font-mono text-[10px] text-slate-500">BAL {(Number(usdcBalance) || 0).toFixed(4)} {COLLATERAL_SYMBOL}</span>
           </div>
 
+          <AnchorPanel
+            walletAddress={walletAddress}
+            onUsdcBalance={setUsdcBalance}
+            onRate={handleAnchorRate}
+            notify={showNotice}
+            onSettled={() => void refreshChain()}
+            registerRefresh={(refresh) => {
+              anchorRefresh.current = refresh;
+            }}
+          />
+
           <form onSubmit={submitOrder} className="space-y-4">
-            <Field label="INPUT COLLATERAL" suffix="XLM" value={amountIn} onChange={setAmountIn} disabled={lifecycle === "running"} />
+            <Field label="INPUT COLLATERAL (FROM ANCHOR)" suffix={COLLATERAL_SYMBOL} value={amountIn} onChange={setAmountIn} disabled={lifecycle === "running"} />
             <div className="grid grid-cols-4 gap-1.5">{[25, 50, 75, 100].map((percentage) => <button key={percentage} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="border border-slate-800 bg-zinc-950 py-1.5 font-mono text-[10px] text-slate-400 hover:border-cyan-500/50 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40">{percentage}%</button>)}</div>
             <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-slate-600" /></div>
-            <Field label="MINIMUM OUTPUT" suffix="USDC" value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} />
+            <Field label="MINIMUM OUTPUT" suffix={TARGET_SYMBOL} value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} />
             <div>
               <div className="mb-2 flex items-center justify-between"><label className="text-[10px] font-medium tracking-widest text-slate-500">SLIPPAGE TOLERANCE</label><span className="font-mono text-xs text-cyan-400">{slippage.toFixed(1)}%</span></div>
               <div className="grid grid-cols-3 gap-1.5">{[0.1, 0.5, 1].map((value) => <button key={value} type="button" disabled={lifecycle === "running"} onClick={() => setSlippage(value)} className={`border py-2 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-40 ${slippage === value ? "border-cyan-500 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-zinc-950 text-slate-400"}`}>{value.toFixed(1)}%</button>)}</div>
@@ -911,10 +974,18 @@ function App() {
             <Field label="KEEPER BOUNTY" suffix="BPS" value={feeBps} onChange={setFeeBps} disabled={lifecycle === "running"} />
 
             <div className="border border-slate-800 bg-zinc-950 p-3 font-mono text-[11px]">
-              <Breakdown label="Input collateral" value={`${numericAmount.toFixed(7)} XLM`} />
-              <Breakdown label="Keeper reward" value={`${keeperReward.toLocaleString()} stroops`} />
-              <Breakdown label="Net swap amount" value={`${netSwapAmount.toFixed(7)} XLM`} />
-              <Breakdown label="Effective trigger price" value={`${effectivePrice.toFixed(7)} USDC/XLM`} strong />
+              <Breakdown label="Swap input (full collateral)" value={`${numericAmount.toFixed(7)} ${COLLATERAL_SYMBOL}`} />
+              <Breakdown label="Keeper reward" value={`${keeperFeePercent}% of realized ${TARGET_SYMBOL} output`} />
+              <p className="mt-2 text-[9px] leading-relaxed text-slate-600">Minimum output is before the keeper fee. You receive the realized output minus the keeper reward.</p>
+              <Breakdown label="Effective trigger price" value={`${effectivePrice.toFixed(7)} ${COLLATERAL_SYMBOL}/${TARGET_SYMBOL}`} />
+              <Breakdown
+                label={`Target: 1 ${TARGET_SYMBOL}`}
+                value={tryPerUsdc > 0 ? `${triggerPriceTry.toFixed(2)} TL` : "— TL"}
+                strong
+              />
+              {rateSource && (
+                <p className="mt-2 text-[9px] leading-relaxed text-slate-600">{rateSource}</p>
+              )}
             </div>
 
             <button type="submit" disabled={lifecycle === "running"} className="flex w-full items-center justify-center gap-2 bg-cyan-500 py-3 text-xs font-bold tracking-wide text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60">
@@ -939,8 +1010,8 @@ function App() {
 
           <div className="overflow-x-auto">
             <table className="w-full min-w-[820px] text-left">
-              <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[9px] uppercase tracking-wider text-slate-500"><tr><th className="px-4 py-3">Order</th><th className="px-4 py-3">Owner</th><th className="px-4 py-3 text-right">Collateral</th><th className="px-4 py-3 text-right">Min Output</th><th className="px-4 py-3 text-right">Bounty</th><th className="px-4 py-3">Created</th><th className="px-4 py-3 text-right">Action</th></tr></thead>
-              <tbody className="divide-y divide-slate-800/80">{visibleOrders.map((order) => <tr key={order.id} className="font-mono text-xs hover:bg-slate-900/60"><td className="px-4 py-3 text-cyan-400">#{order.id}</td><td className="px-4 py-3 text-slate-400">{shortAddress(String(order.owner || ""))}</td><td className="px-4 py-3 text-right text-white">{(Number(order.amountIn) || 0).toFixed(4)} XLM</td><td className="px-4 py-3 text-right text-slate-300">≥ {(Number(order.minAmountOut) || 0).toFixed(4)} USDC</td><td className="px-4 py-3 text-right text-amber-300">{((Number(order.feeBps) || 0) / 100).toFixed(2)}%</td><td className="px-4 py-3 text-slate-500">{safeTime(order.createdAt)}</td><td className="px-4 py-3 text-right">{order.status === "Active" && order.owner === walletAddress ? <button disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3 w-3" />CANCEL & RECLAIM</button> : <span className="text-slate-600">{String(order.status || "").toUpperCase()}</span>}</td></tr>)}</tbody>
+              <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[9px] uppercase tracking-wider text-slate-500"><tr><th className="px-4 py-3">Order</th><th className="px-4 py-3">Owner</th><th className="px-4 py-3 text-right">Collateral</th><th className="px-4 py-3 text-right">Min Output</th><th className="px-4 py-3 text-right">Bounty</th><th className="px-4 py-3">First seen</th><th className="px-4 py-3 text-right">Action</th></tr></thead>
+              <tbody className="divide-y divide-slate-800/80">{visibleOrders.map((order) => <tr key={order.id} className="font-mono text-xs hover:bg-slate-900/60"><td className="px-4 py-3 text-cyan-400">#{order.id}</td><td className="px-4 py-3 text-slate-400">{shortAddress(String(order.owner || ""))}</td><td className="px-4 py-3 text-right text-white">{(Number(order.amountIn) || 0).toFixed(4)} {COLLATERAL_SYMBOL}</td><td className="px-4 py-3 text-right text-slate-300"><span>≥ {(Number(order.minAmountOut) || 0).toFixed(4)} {TARGET_SYMBOL}</span>{tryPerUsdc > 0 && Number(order.minAmountOut) > 0 && <span className="block text-[10px] text-slate-600">1 {TARGET_SYMBOL} = {((Number(order.amountIn) / Number(order.minAmountOut)) * tryPerUsdc).toFixed(2)} TL</span>}</td><td className="px-4 py-3 text-right text-amber-300">{((Number(order.feeBps) || 0) / 100).toFixed(2)}%</td><td className="px-4 py-3 text-slate-500">{order.observedAt ? safeTime(order.observedAt) : "—"}</td><td className="px-4 py-3 text-right">{order.status === "Active" && order.owner === walletAddress ? <button disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3 w-3" />CANCEL & RECLAIM</button> : <span className="text-slate-600">{String(order.status || "").toUpperCase()}</span>}</td></tr>)}</tbody>
             </table>
             {visibleOrders.length === 0 && <div className="grid min-h-64 place-items-center border-b border-slate-800"><div className="max-w-md px-6 text-center">{tab === "history" ? <><div className="relative mx-auto mb-4 h-12 w-12"><span className="absolute inset-0 animate-ping rounded-full border border-cyan-500/30" /><span className="absolute inset-2 animate-pulse rounded-full border border-cyan-400/50 bg-cyan-500/5" /><Activity className="absolute inset-0 m-auto h-5 w-5 text-cyan-400" /></div><p className="font-mono text-xs text-slate-400">NO HISTORICAL ORDERS</p><p className="mt-2 text-[10px] leading-relaxed text-slate-600">Autonomous keeper engine is actively scanning order book for price triggers</p></> : <><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="font-mono text-xs text-slate-500">NO ACTIVE ORDERS</p><p className="mt-1 text-[10px] text-slate-700">Waiting for contract state updates</p></>}</div></div>}
           </div>
