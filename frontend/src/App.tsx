@@ -117,7 +117,8 @@ const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 const toStroops = (value: string): bigint => {
-  const [whole = "0", fraction = ""] = value.trim().split(".");
+  const normalizedValue = value.trim().replace(",", ".");
+  const [whole = "0", fraction = ""] = normalizedValue.split(".");
   const normalizedFraction = `${fraction}0000000`.slice(0, 7);
   return BigInt(whole || "0") * 10_000_000n + BigInt(normalizedFraction);
 };
@@ -138,11 +139,40 @@ async function simulateRead<T>(method: string, ...args: xdr.ScVal[]): Promise<T>
   return scValToNative(simulation.result.retval) as T;
 }
 
-async function waitForTransaction(hash: string): Promise<rpc.Api.GetTransactionResponse> {
+interface RawTransactionStatus {
+  status: "SUCCESS" | "FAILED" | "NOT_FOUND";
+  ledger?: number;
+}
+
+async function waitForTransaction(hash: string): Promise<RawTransactionStatus> {
   const deadline = Date.now() + 60_000;
   while (Date.now() < deadline) {
-    const result = await server.getTransaction(hash);
-    if (result.status !== rpc.Api.GetTransactionStatus.NOT_FOUND) return result;
+    const response = await fetch(RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `tx-${hash}`,
+        method: "getTransaction",
+        params: { hash },
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`getTransaction HTTP ${response.status}`);
+    }
+    const payload = (await response.json()) as {
+      result?: RawTransactionStatus;
+      error?: unknown;
+    };
+    if (payload.error) {
+      throw new Error(`getTransaction RPC error: ${safeMessage(payload.error)}`);
+    }
+    const result = payload.result;
+    if (!result) throw new Error("getTransaction returned no result");
+    if (result.status === "SUCCESS") return result;
+    if (result.status === "FAILED") {
+      throw new Error(`Transaction failed: ${hash}`);
+    }
     await delay(2_000);
   }
   throw new Error(`Ledger confirmation timed out: ${hash}`);
@@ -183,8 +213,8 @@ export default function App() {
     );
   };
 
-  const numericAmount = Number(amountIn) || 0;
-  const numericMinOut = Number(minAmountOut) || 0;
+  const numericAmount = Number(amountIn.replace(",", ".")) || 0;
+  const numericMinOut = Number(minAmountOut.replace(",", ".")) || 0;
   const numericFeeBps = Math.min(1_000, Math.max(0, Number(feeBps) || 0));
   const keeperReward = Math.floor(
     numericAmount * STROOPS_PER_XLM * (numericFeeBps / 10_000),
@@ -445,7 +475,7 @@ export default function App() {
     setLifecycleStep(3);
     showNotice("info", "Defter onayı bekleniyor", "İşlem deftere yazılıyor...");
     const result = await waitForTransaction(submission.hash);
-    if (result.status !== rpc.Api.GetTransactionStatus.SUCCESS) {
+    if (result.status !== "SUCCESS") {
       throw new Error(`Transaction failed: ${submission.hash}`);
     }
     return submission.hash;
