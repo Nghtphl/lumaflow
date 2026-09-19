@@ -476,7 +476,7 @@ export default function AnchorPanel({
   };
 
   return (
-    <div>
+    <div className="notranslate" translate="no">
       <div className="mb-5 flex items-center justify-between">
         <div className="flex min-w-0 items-center gap-2">
           <div className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/10 text-cyan-300"><Landmark className="h-4 w-4" /></div>
@@ -755,7 +755,7 @@ export default function AnchorPanel({
                     className="flex w-full items-center justify-center gap-2 border border-emerald-500/50 bg-emerald-500/10 py-2.5 font-mono text-[10px] tracking-wide text-emerald-200 hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-                    {paymentSent ? "PAYMENT SENT" : "SIGN & SEND USDC WITH MEMO"}
+                    <span>{paymentSent ? "PAYMENT SENT" : "SIGN & SEND USDC WITH MEMO"}</span>
                   </button>
                 </div>
               )}
@@ -853,7 +853,7 @@ function CopyDetail({
         className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 py-2 text-[10px] font-medium text-slate-300 transition hover:border-cyan-500/40 hover:text-cyan-300"
       >
         {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
-        {copied ? "Copied!" : "Copy"}
+        <span>{copied ? "Copied!" : "Copy"}</span>
       </button>
     </div>
   );
@@ -913,9 +913,7 @@ function StatusLadder({
         {tracked.amountIn && (
           <div className="flex justify-between">
             <span>Amount in / out</span>
-            <span className="text-slate-300">
-              {tracked.amountIn} → {tracked.amountOut || "—"}
-            </span>
+            <span className="text-slate-300">{`${tracked.amountIn} → ${tracked.amountOut || "—"}`}</span>
           </div>
         )}
         {tracked.externalTransactionId && (

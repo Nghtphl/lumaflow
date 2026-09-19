@@ -50,19 +50,11 @@ const STROOPS_PER_XLM = 10_000_000;
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const NATIVE_XLM_SAC =
   "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
-// Collateral is the anchor's USDC, wrapped as a Soroban token by its Stellar
-// Asset Contract. This is the bridge between the classic asset the anchor pays
-// out and the token address `create_order` speaks — the vault is token-generic,
-// so nothing on-chain had to change for this.
+// The anchor's classic USDC balance is exposed to Soroban through this SAC.
 const USDC_SAC =
   (import.meta.env.VITE_USDC_SAC_ID as string | undefined)?.trim() ||
   "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
 const usdcToken = new Contract(USDC_SAC);
-const COLLATERAL_SYMBOL = "USDC";
-const TARGET_SYMBOL = "XLM";
-const CONFIGURED_TOKEN_OUT =
-  (import.meta.env.VITE_TOKEN_OUT_CONTRACT_ID as string | undefined)?.trim() ||
-  NATIVE_XLM_SAC;
 const READ_ONLY_SOURCE =
   "GBICM7WA6FIVCFRCPM3ZIGNF5CZC5VRCU4IV4DJPQLWIALVQ6IN6OI6A";
 const server = new rpc.Server(RPC_URL);
@@ -71,8 +63,42 @@ const vault = new Contract(CONTRACT_ID);
 type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type ActionTab = "order" | "ramp";
+type TokenSymbol = "USDC" | "XLM";
 type LifecycleState = "idle" | "running" | "complete" | "error";
 type NoticeType = "success" | "error" | "info";
+
+const TOKEN_OPTIONS: ReadonlyArray<{
+  symbol: TokenSymbol;
+  name: string;
+  badge: string;
+  badgeClass: string;
+}> = [
+  {
+    symbol: "USDC",
+    name: "Circle Testnet",
+    badge: "$",
+    badgeClass: "bg-blue-500/15 text-blue-300 ring-blue-400/20",
+  },
+  {
+    symbol: "XLM",
+    name: "Stellar Lumens",
+    badge: "✦",
+    badgeClass: "bg-violet-500/15 text-violet-300 ring-violet-400/20",
+  },
+];
+
+const opposingToken = (token: TokenSymbol): TokenSymbol =>
+  token === "USDC" ? "XLM" : "USDC";
+
+const tokenContractId = (token: TokenSymbol): string =>
+  token === "USDC" ? USDC_SAC : NATIVE_XLM_SAC;
+
+const tokenSymbolFromContract = (contractId: string): TokenSymbol | "TOKEN" =>
+  contractId === USDC_SAC
+    ? "USDC"
+    : contractId === NATIVE_XLM_SAC
+      ? "XLM"
+      : "TOKEN";
 
 interface OrderItem {
   id: number;
@@ -322,6 +348,8 @@ function App() {
   // stablecoin ratios.
   const [tryPerUsdc, setTryPerUsdc] = useState(0);
   const [rateSource, setRateSource] = useState("");
+  const [depositToken, setDepositToken] = useState<TokenSymbol>("USDC");
+  const [targetToken, setTargetToken] = useState<TokenSymbol>("XLM");
   const [amountIn, setAmountIn] = useState("10");
   const [minAmountOut, setMinAmountOut] = useState("38");
   const [feeBps, setFeeBps] = useState("100");
@@ -339,6 +367,7 @@ function App() {
   const [lifecycleStep, setLifecycleStep] = useState(-1);
   const [message, setMessage] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
+  const noticeId = useRef(0);
   const operationLock = useRef(false);
   const observedAt = useRef(new Map<number, string>());
   const hasLoadedOrders = useRef(false);
@@ -349,7 +378,8 @@ function App() {
     detail: unknown,
     txHash?: string,
   ): void => {
-    const id = Date.now();
+    noticeId.current += 1;
+    const id = noticeId.current;
     const nextTitle = safeMessage(title);
     const nextDetail = safeMessage(detail);
     setNotices((current) => {
@@ -385,16 +415,35 @@ function App() {
   const keeperFeePercent = Number.isFinite(numericFeeBps)
     ? numericFeeBps / 100
     : 0;
-  // Collateral is USDC and the target asset is XLM, so the trigger the user
-  // cares about is the USDC paid per XLM received.
-  const rawEffectivePrice =
-    numericAmount > 0 && numericMinOut > 0
+  const rawEffectivePrice = numericAmount > 0 && numericMinOut > 0
+    ? depositToken === "USDC"
       ? numericAmount / numericMinOut
-      : 0;
+      : numericMinOut / numericAmount
+    : 0;
   const effectivePrice = Number.isFinite(rawEffectivePrice)
     ? rawEffectivePrice
     : 0;
   const triggerPriceTry = effectivePrice * tryPerUsdc;
+  const selectedDepositBalance =
+    depositToken === "USDC" ? usdcBalance : walletBalance;
+  const spendableDepositBalance =
+    depositToken === "XLM"
+      ? Math.max(walletBalance - 1, 0)
+      : usdcBalance;
+  const tokenBalances: Record<TokenSymbol, number> = {
+    USDC: usdcBalance,
+    XLM: walletBalance,
+  };
+  const depositFiatValue = tryPerUsdc > 0
+    ? depositToken === "USDC"
+      ? `≈ ${(numericAmount * tryPerUsdc).toFixed(2)} TRY`
+      : `≈ ${(numericAmount * triggerPriceTry).toFixed(2)} TRY at target`
+    : undefined;
+  const targetFiatValue = tryPerUsdc > 0 && numericMinOut > 0
+    ? targetToken === "USDC"
+      ? `≈ ${(numericMinOut * tryPerUsdc).toFixed(2)} TRY minimum`
+      : `1 XLM ≈ ${triggerPriceTry.toFixed(2)} TRY via SEP-38`
+    : undefined;
 
   const safeOrders = useMemo(
     () =>
@@ -416,7 +465,11 @@ function App() {
   const activeValue = useMemo(
     () =>
       safeOrders
-        .filter((order) => order.status === "Active")
+        .filter(
+          (order) =>
+            order.status === "Active" &&
+            tokenSymbolFromContract(order.tokenIn) === "USDC",
+        )
         .reduce((total, order) => total + (Number(order.amountIn) || 0), 0),
     [safeOrders],
   );
@@ -677,18 +730,35 @@ function App() {
   };
 
   const fillBalancePercentage = (percentage: number): void => {
-    // Collateral is USDC, so no XLM reserve has to be held back here — but the
-    // account still needs XLM for fees, and that is checked at submit time.
-    if (usdcBalance <= 0) {
+    if (spendableDepositBalance <= 0) {
       setAmountIn("0.0000000");
       showNotice(
         "error",
-        "No USDC collateral",
-        `Deposit TRY through ${COLLATERAL_SYMBOL} funding before placing an order.`,
+        `No spendable ${depositToken}`,
+        depositToken === "XLM"
+          ? "Keep at least 1 XLM available for fees and the base reserve."
+          : "Deposit TRY through the bank bridge before placing an order.",
       );
       return;
     }
-    setAmountIn(((usdcBalance * percentage) / 100).toFixed(7));
+    setAmountIn(((spendableDepositBalance * percentage) / 100).toFixed(7));
+  };
+
+  const selectDepositToken = (token: TokenSymbol): void => {
+    setDepositToken(token);
+    setTargetToken(opposingToken(token));
+  };
+
+  const selectTargetToken = (token: TokenSymbol): void => {
+    setTargetToken(token);
+    setDepositToken(opposingToken(token));
+  };
+
+  const flipPair = (): void => {
+    setDepositToken(targetToken);
+    setTargetToken(depositToken);
+    setAmountIn(minAmountOut);
+    setMinAmountOut(amountIn);
   };
 
   const assertFreighterTestnet = async (): Promise<void> => {
@@ -779,8 +849,8 @@ function App() {
       showNotice("error", "Invalid Order Values", detail);
       return;
     }
-    if (numericAmount > usdcBalance) {
-      const detail = `Insufficient collateral: Available balance is ${usdcBalance.toFixed(7)} ${COLLATERAL_SYMBOL}. Fund the vault with TRY first.`;
+    if (numericAmount > spendableDepositBalance) {
+      const detail = `Insufficient collateral: Available balance is ${spendableDepositBalance.toFixed(7)} ${depositToken}.${depositToken === "XLM" ? " A 1 XLM reserve is excluded." : " Fund the wallet through the TRY bridge first."}`;
       setMessage(detail);
       showNotice("error", "Insufficient Collateral", detail);
       return;
@@ -799,8 +869,8 @@ function App() {
       return;
     }
 
-    const tokenIn = USDC_SAC;
-    const tokenOut = CONFIGURED_TOKEN_OUT;
+    const tokenIn = tokenContractId(depositToken);
+    const tokenOut = tokenContractId(targetToken);
     if (!tokenIn) {
       const detail =
         "Collateral token contract is not configured (VITE_USDC_SAC_ID).";
@@ -871,9 +941,11 @@ function App() {
     if (operationLock.current) return;
     operationLock.current = true;
     setMessage("");
-    // Collateral is the SAC-wrapped USDC that came from the anchor, so the
-    // reclaimed amount is the order's own collateral, not an XLM delta.
-    const reclaimed = safeOrders.find((order) => order.id === id)?.amountIn || 0;
+    const cancelledOrder = safeOrders.find((order) => order.id === id);
+    const reclaimed = cancelledOrder?.amountIn || 0;
+    const reclaimedSymbol = cancelledOrder
+      ? tokenSymbolFromContract(cancelledOrder.tokenIn)
+      : "TOKEN";
     try {
       const hash = await submitContractOperation("cancel_order", [
         xdr.ScVal.scvU32(id),
@@ -881,12 +953,12 @@ function App() {
       await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
       setLifecycle("complete");
       setMessage(
-        `Cancellation confirmed: ${hash} | Reclaimed ${reclaimed.toFixed(7)} ${COLLATERAL_SYMBOL}`,
+        `Cancellation confirmed: ${hash} | Reclaimed ${reclaimed.toFixed(7)} ${reclaimedSymbol}`,
       );
       showNotice(
         "success",
         `Order #${id} cancelled. Collateral reclaimed.`,
-        `${reclaimed.toFixed(7)} ${COLLATERAL_SYMBOL} returned to your wallet`,
+        `${reclaimed.toFixed(7)} ${reclaimedSymbol} returned to your wallet`,
         hash,
       );
     } catch (error) {
@@ -960,7 +1032,10 @@ function App() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#0B0F19] text-slate-100 antialiased selection:bg-cyan-500/30">
+    <div
+      className="notranslate relative min-h-screen overflow-hidden bg-[#0B0F19] text-slate-100 antialiased selection:bg-cyan-500/30"
+      translate="no"
+    >
       <style>{`@keyframes toast-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }`}</style>
       <div className="pointer-events-none fixed inset-0">
         <div className="absolute inset-x-0 top-0 h-[34rem] bg-[radial-gradient(circle_at_50%_0%,rgba(34,211,238,0.12),transparent_62%)]" />
@@ -1029,7 +1104,7 @@ function App() {
               className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
             >
               {walletConnecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
-              {walletConnecting ? "Connecting" : "Connect Freighter"}
+              <span>{walletConnecting ? "Connecting" : "Connect Freighter"}</span>
             </button>
           )}
         </nav>
@@ -1101,16 +1176,58 @@ function App() {
                 <div className="mb-5 flex items-end justify-between">
                   <div>
                     <h2 className="text-lg font-semibold text-white">Create limit order</h2>
-                    <p className="mt-1 text-xs text-slate-500">Swap USDC to XLM when your target can be met.</p>
+                    <p className="mt-1 text-xs text-slate-500">Swap {depositToken} to {targetToken} when your target can be met.</p>
                   </div>
-                  <span className="rounded-full bg-slate-800/80 px-3 py-1 text-[10px] text-slate-400">{usdcBalance.toFixed(2)} USDC</span>
+                  <span className="rounded-full bg-slate-800/80 px-3 py-1 text-[10px] text-slate-400">
+                    Balance {selectedDepositBalance.toFixed(2)} {depositToken}
+                  </span>
                 </div>
 
                 <form onSubmit={submitOrder} className="space-y-3">
-                  <Field label="YOU DEPOSIT" suffix={COLLATERAL_SYMBOL} value={amountIn} onChange={setAmountIn} disabled={lifecycle === "running"} fiatValue={tryPerUsdc > 0 ? `≈ ${(numericAmount * tryPerUsdc).toFixed(2)} TRY` : undefined} />
+                  <Field
+                    label="YOU DEPOSIT"
+                    suffix={depositToken}
+                    value={amountIn}
+                    onChange={setAmountIn}
+                    disabled={lifecycle === "running"}
+                    fiatValue={depositFiatValue}
+                    suffixNode={
+                      <TokenSelector
+                        value={depositToken}
+                        balances={tokenBalances}
+                        disabled={lifecycle === "running"}
+                        onSelect={selectDepositToken}
+                      />
+                    }
+                  />
                   <div className="grid grid-cols-3 gap-2">{[25, 50, 100].map((percentage) => <button key={percentage.toString()} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="rounded-lg border border-slate-800 bg-slate-950/50 py-2 text-[10px] font-medium text-slate-400 transition hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-40">{percentage}%</button>)}</div>
-                  <div className="relative flex h-5 justify-center"><span className="absolute grid h-8 w-8 place-items-center rounded-full border border-slate-700 bg-slate-900 text-slate-400"><ArrowDown className="h-4 w-4" /></span></div>
-                  <Field label="TARGET RATE / MIN OUTPUT" suffix={TARGET_SYMBOL} value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} fiatValue={tryPerUsdc > 0 && numericMinOut > 0 ? `1 XLM ≈ ${triggerPriceTry.toFixed(2)} TRY via SEP-38` : undefined} />
+                  <div className="relative flex h-5 justify-center">
+                    <button
+                      type="button"
+                      onClick={flipPair}
+                      disabled={lifecycle === "running"}
+                      aria-label={`Switch pair to ${targetToken} for ${depositToken}`}
+                      className="absolute z-10 grid h-8 w-8 place-items-center rounded-full border border-slate-700 bg-slate-900 text-slate-400 transition-all duration-300 hover:rotate-180 hover:bg-slate-800 hover:text-purple-300 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <ArrowDown className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <Field
+                    label="TARGET RATE / MIN OUTPUT"
+                    suffix={targetToken}
+                    value={minAmountOut}
+                    onChange={setMinAmountOut}
+                    disabled={lifecycle === "running"}
+                    fiatValue={targetFiatValue}
+                    suffixNode={
+                      <TokenSelector
+                        value={targetToken}
+                        balances={tokenBalances}
+                        disabled={lifecycle === "running"}
+                        onSelect={selectTargetToken}
+                      />
+                    }
+                  />
 
                   <div className="grid grid-cols-2 gap-3 pt-1">
                     <div>
@@ -1121,7 +1238,7 @@ function App() {
                   </div>
 
                   <div className="rounded-xl border border-slate-800/80 bg-slate-950/50 p-4 text-xs">
-                    <Breakdown label="Full swap input" value={`${numericAmount.toFixed(4)} USDC`} />
+                    <Breakdown label="Full swap input" value={`${numericAmount.toFixed(4)} ${depositToken}`} />
                     <Breakdown label="Keeper reward" value={`${keeperFeePercent}% of output`} />
                     <Breakdown label="Trigger price" value={tryPerUsdc > 0 ? `${triggerPriceTry.toFixed(2)} TRY / XLM` : "Rate unavailable"} strong />
                     {rateSource ? <div key="rate-source" className="mt-2 text-[9px] text-slate-600">{rateSource}</div> : null}
@@ -1173,7 +1290,19 @@ function App() {
               <div className="my-4 flex gap-1 rounded-xl bg-slate-950/60 p-1">{([{ id: "active", label: "Active" }, { id: "history", label: "History" }] as const).map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex-1 rounded-lg px-4 py-2 text-xs font-medium transition ${tab === item.id ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"}`}>{item.label}</button>)}</div>
 
               <div className="space-y-3">
-                {visibleOrders.map((order) => (
+                {visibleOrders.map((order) => {
+                  const inputSymbol = tokenSymbolFromContract(order.tokenIn);
+                  const outputSymbol = tokenSymbolFromContract(order.tokenOut);
+                  const orderUsdcPerXlm = order.amountIn > 0 && order.minAmountOut > 0
+                    ? inputSymbol === "USDC"
+                      ? order.amountIn / order.minAmountOut
+                      : order.minAmountOut / order.amountIn
+                    : 0;
+                  const orderTryPerXlm = orderUsdcPerXlm * tryPerUsdc;
+                  const collateralTry = inputSymbol === "USDC"
+                    ? order.amountIn * tryPerUsdc
+                    : order.amountIn * orderTryPerXlm;
+                  return (
                   <div key={order.id.toString()} className="rounded-xl border border-slate-800/60 bg-slate-950/50 p-4 transition hover:border-slate-700 hover:bg-slate-800/40">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -1183,19 +1312,19 @@ function App() {
                         </div>
                         <p className="mt-1 font-mono text-[10px] text-slate-600">{shortAddress(order.owner, 8, 6)}</p>
                       </div>
-                      <div className="rounded-full border border-slate-700/70 bg-slate-800/70 px-3 py-1 text-[10px] font-semibold text-slate-300">USDC / XLM</div>
+                      <div className="rounded-full border border-slate-700/70 bg-slate-800/70 px-3 py-1 text-[10px] font-semibold text-slate-300">{inputSymbol} / {outputSymbol}</div>
                     </div>
 
                     <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl bg-slate-950/60 p-3">
                       <div key="collateral">
                         <p className="text-[9px] uppercase tracking-widest text-slate-600">Collateral</p>
-                        <p className="mt-1 text-sm font-semibold text-white">{order.amountIn.toFixed(2)} USDC</p>
-                        {tryPerUsdc > 0 ? <div key="collateral-try" className="mt-1 text-[10px] text-slate-500">≈ {(order.amountIn * tryPerUsdc).toFixed(2)} TRY</div> : null}
+                        <p className="mt-1 text-sm font-semibold text-white">{order.amountIn.toFixed(2)} {inputSymbol}</p>
+                        {tryPerUsdc > 0 ? <div key="collateral-try" className="mt-1 text-[10px] text-slate-500">≈ {collateralTry.toFixed(2)} TRY</div> : null}
                       </div>
                       <div key="target" className="text-right">
                         <p className="text-[9px] uppercase tracking-widest text-slate-600">Target price</p>
-                        <p className="mt-1 text-sm font-semibold text-white">{order.minAmountOut.toFixed(4)} XLM min</p>
-                        {tryPerUsdc > 0 && order.minAmountOut > 0 ? <div key="target-try" className="mt-1 inline-flex rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-300">1 XLM ≈ {((order.amountIn / order.minAmountOut) * tryPerUsdc).toFixed(2)} TRY</div> : null}
+                        <p className="mt-1 text-sm font-semibold text-white">{order.minAmountOut.toFixed(4)} {outputSymbol} min</p>
+                        {tryPerUsdc > 0 && order.minAmountOut > 0 ? <div key="target-try" className="mt-1 inline-flex rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-300">1 XLM ≈ {orderTryPerXlm.toFixed(2)} TRY</div> : null}
                       </div>
                     </div>
 
@@ -1207,7 +1336,8 @@ function App() {
                       </div>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
 
                 {visibleOrders.length === 0 ? (
                   tab === "history" ? (
@@ -1290,7 +1420,7 @@ function ConnectWalletModal({
               F
             </span>
           )}
-          {connecting ? "Connecting to Freighter…" : "Connect Wallet"}
+          <span>{connecting ? "Connecting to Freighter…" : "Connect Wallet"}</span>
         </button>
         <p className="mt-4 text-[10px] uppercase tracking-[0.18em] text-slate-600">
           Stellar Testnet · Non-custodial
@@ -1304,8 +1434,98 @@ function TelemetryCell({ label, value, icon, healthy }: { label: string; value: 
   return <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 px-4 py-3 backdrop-blur-xl"><div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-slate-500">{icon}{label}</div><div className="flex items-center gap-2 text-xs font-medium text-slate-200">{healthy !== undefined && <span className={`h-1.5 w-1.5 rounded-full ${healthy ? "bg-emerald-400" : "bg-rose-400"}`} />}{value}</div></div>;
 }
 
-function Field({ label, suffix, value, onChange, disabled = false, fiatValue, compact = false }: { label: string; suffix: string; value: string; onChange: (value: string) => void; disabled?: boolean; fiatValue?: string; compact?: boolean }) {
-  return <label className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className={`flex items-center rounded-xl border border-slate-800 bg-slate-950/60 transition focus-within:border-cyan-500/60 focus-within:ring-2 focus-within:ring-cyan-500/10 ${disabled ? "opacity-50" : ""}`}><div className="min-w-0 flex-1"><input type="text" inputMode="decimal" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value.replace(",", "."))} className={`w-full bg-transparent px-4 pt-3 font-semibold text-white outline-none disabled:cursor-not-allowed ${compact ? "pb-3 text-base" : fiatValue ? "pb-0.5 text-2xl" : "pb-3 text-2xl"}`} />{fiatValue && <span className="block px-4 pb-3 text-xs text-slate-500">{fiatValue}</span>}</div><span className="mr-3 rounded-full border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200">{suffix}</span></div></label>;
+function TokenSelector({
+  value,
+  balances,
+  disabled,
+  onSelect,
+}: {
+  value: TokenSymbol;
+  balances: Record<TokenSymbol, number>;
+  disabled: boolean;
+  onSelect: (token: TokenSymbol) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectorRef = useRef<HTMLDivElement>(null);
+  const selected = TOKEN_OPTIONS.find((token) => token.symbol === value) || TOKEN_OPTIONS[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const handleOutside = (event: PointerEvent): void => {
+      if (
+        event.target instanceof Node &&
+        !selectorRef.current?.contains(event.target)
+      ) {
+        setOpen(false);
+      }
+    };
+    const handleEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", handleOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("pointerdown", handleOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [open]);
+
+  return (
+    <div ref={selectorRef} className="relative mr-3 shrink-0">
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((current) => !current)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={`Select token, currently ${value}`}
+        className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-800/80 px-3 py-1.5 font-medium text-white transition-all hover:bg-slate-700/80 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span className={`grid h-6 w-6 place-items-center rounded-full text-xs font-bold ring-1 ${selected.badgeClass}`}>
+          {selected.badge}
+        </span>
+        <span className="text-xs">{selected.symbol}</span>
+        <span className={`text-sm text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true">⌄</span>
+      </button>
+
+      {open ? (
+        <div
+          role="listbox"
+          aria-label="Available Stellar assets"
+          className="animate-in fade-in zoom-in-95 absolute right-0 top-full z-50 mt-2 w-48 rounded-2xl border border-slate-700/70 bg-slate-900/95 p-2 shadow-2xl backdrop-blur-xl duration-150"
+        >
+          {TOKEN_OPTIONS.map((token) => (
+            <button
+              key={token.symbol}
+              type="button"
+              role="option"
+              aria-selected={token.symbol === value}
+              onClick={() => {
+                onSelect(token.symbol);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-all hover:bg-purple-500/10"
+            >
+              <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-sm font-bold ring-1 ${token.badgeClass}`}>
+                {token.badge}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-xs font-semibold text-white">{token.symbol}</span>
+                <span className="block truncate text-[9px] text-slate-500">{token.name}</span>
+              </span>
+              <span className="text-right text-[10px] font-medium text-slate-300">
+                {balances[token.symbol].toFixed(2)}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Field({ label, suffix, value, onChange, disabled = false, fiatValue, compact = false, suffixNode }: { label: string; suffix: string; value: string; onChange: (value: string) => void; disabled?: boolean; fiatValue?: string; compact?: boolean; suffixNode?: ReactNode }) {
+  return <div className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className={`flex items-center rounded-xl border border-slate-800 bg-slate-950/60 transition focus-within:border-cyan-500/60 focus-within:ring-2 focus-within:ring-cyan-500/10 ${disabled ? "opacity-50" : ""}`}><div className="min-w-0 flex-1"><input aria-label={label} type="text" inputMode="decimal" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value.replace(",", "."))} className={`w-full bg-transparent px-4 pt-3 font-semibold text-white outline-none disabled:cursor-not-allowed ${compact ? "pb-3 text-base" : fiatValue ? "pb-0.5 text-2xl" : "pb-3 text-2xl"}`} />{fiatValue && <span className="block px-4 pb-3 text-xs text-slate-500">{fiatValue}</span>}</div>{suffixNode ?? <span className="mr-3 rounded-full border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200">{suffix}</span>}</div></div>;
 }
 
 function Breakdown({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
