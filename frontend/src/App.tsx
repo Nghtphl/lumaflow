@@ -57,6 +57,7 @@ const NATIVE_XLM_SAC =
 const USDC_SAC =
   (import.meta.env.VITE_USDC_SAC_ID as string | undefined)?.trim() ||
   "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA";
+const usdcToken = new Contract(USDC_SAC);
 const COLLATERAL_SYMBOL = "USDC";
 const TARGET_SYMBOL = "XLM";
 const CONFIGURED_TOKEN_OUT =
@@ -339,7 +340,6 @@ function App() {
   const [message, setMessage] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
   const operationLock = useRef(false);
-  const anchorRefresh = useRef<(() => void) | null>(null);
   const observedAt = useRef(new Map<number, string>());
   const hasLoadedOrders = useRef(false);
 
@@ -576,7 +576,7 @@ function App() {
     };
   }, []);
 
-  const fetchWalletBalance = async (address: string): Promise<number> => {
+  const fetchWalletBalance = useCallback(async (address: string): Promise<number> => {
     const response = await fetch(`${HORIZON_URL}/accounts/${address}`);
     if (!response.ok) throw new Error("Wallet balance unavailable");
     const account = (await response.json()) as {
@@ -587,17 +587,56 @@ function App() {
     );
     setWalletBalance(balance);
     return balance;
-  };
+  }, []);
+
+  const fetchUsdcBalance = useCallback(async (address: string): Promise<number> => {
+    const source = new Account(READ_ONLY_SOURCE, "0");
+    const transaction = new TransactionBuilder(source, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(
+        usdcToken.call("balance", Address.fromString(address).toScVal()),
+      )
+      .setTimeout(30)
+      .build();
+    const simulation = await server.simulateTransaction(transaction);
+    if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result) {
+      throw new Error("USDC balance unavailable");
+    }
+    const rawBalance = scValToNative(simulation.result.retval) as bigint | number;
+    const balance = Number(rawBalance) / STROOPS_PER_XLM;
+    if (!Number.isFinite(balance) || balance < 0) {
+      throw new Error("USDC balance response was invalid");
+    }
+    setUsdcBalance(balance);
+    return balance;
+  }, []);
+
+  const refreshBalances = useCallback(
+    async (addressOverride?: string): Promise<void> => {
+      const address = addressOverride || walletAddress;
+      if (!address) {
+        setWalletBalance(0);
+        setUsdcBalance(0);
+        return;
+      }
+      // Keep each balance independent: a transient Horizon failure must not
+      // discard a valid SAC balance (or vice versa).
+      await Promise.allSettled([
+        fetchWalletBalance(address),
+        fetchUsdcBalance(address),
+      ]);
+    },
+    [fetchUsdcBalance, fetchWalletBalance, walletAddress],
+  );
 
   useEffect(() => {
-    if (!walletAddress) return;
-    const balanceRefresh = window.setTimeout(
-      () =>
-        void fetchWalletBalance(walletAddress).catch(() => setWalletBalance(0)),
-      0,
-    );
+    const balanceRefresh = window.setTimeout(() => {
+      void refreshBalances(walletAddress);
+    }, 0);
     return () => window.clearTimeout(balanceRefresh);
-  }, [walletAddress]);
+  }, [actionTab, refreshBalances, walletAddress]);
 
   const connectWallet = async (): Promise<void> => {
     setMessage("");
@@ -612,7 +651,7 @@ function App() {
       if (!address) throw new Error("Freighter did not return an account address");
       window.localStorage.setItem("trigger_vault_wallet", address);
       setWalletAddress(address);
-      await fetchWalletBalance(address);
+      await refreshBalances(address);
       setConnectModalOpen(false);
       showNotice(
         "success",
@@ -633,6 +672,7 @@ function App() {
     window.localStorage.removeItem("trigger_vault_wallet");
     setWalletAddress("");
     setWalletBalance(0);
+    setUsdcBalance(0);
     showNotice("info", "Wallet Disconnected", "Freighter session removed from the terminal.");
   };
 
@@ -786,8 +826,7 @@ function App() {
         xdr.ScVal.scvU32(numericFeeBps),
       ]);
       setLifecycle("complete");
-      await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
-      anchorRefresh.current?.();
+      await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
       setAmountIn("");
       setMinAmountOut("");
       setMessage(`Order confirmed on ledger: ${hash}`);
@@ -809,7 +848,7 @@ function App() {
         // flight. Never call this a failure: refresh and report it as pending.
         setLifecycle("idle");
         showNotice("info", "Confirmation Pending", detail);
-        await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+        await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
       } else {
         setLifecycle("error");
         if (detail !== WRONG_NETWORK_MESSAGE) {
@@ -839,8 +878,7 @@ function App() {
       const hash = await submitContractOperation("cancel_order", [
         xdr.ScVal.scvU32(id),
       ]);
-      await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
-      anchorRefresh.current?.();
+      await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
       setLifecycle("complete");
       setMessage(
         `Cancellation confirmed: ${hash} | Reclaimed ${reclaimed.toFixed(7)} ${COLLATERAL_SYMBOL}`,
@@ -862,7 +900,7 @@ function App() {
         // Still in flight: report as pending and resync instead of failing.
         setLifecycle("idle");
         showNotice("info", "Confirmation Pending", detail);
-        await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+        await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
       } else {
         setLifecycle("error");
         if (detail !== WRONG_NETWORK_MESSAGE) {
@@ -891,8 +929,7 @@ function App() {
         Address.fromString(walletAddress).toScVal(),
       ]);
       setLifecycle("complete");
-      await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
-      anchorRefresh.current?.();
+      await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
       setMessage(`Order #${id} executed on ledger: ${hash}`);
       showNotice(
         "success",
@@ -909,7 +946,7 @@ function App() {
       } else if (detail === PENDING_CONFIRMATION_MESSAGE) {
         setLifecycle("idle");
         showNotice("info", "Confirmation Pending", detail);
-        await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+        await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
       } else {
         setLifecycle("error");
         if (detail !== WRONG_NETWORK_MESSAGE) {
@@ -1041,20 +1078,26 @@ function App() {
               ))}
             </div>
 
-            {actionTab === "ramp" ? (
+            <div
+              className={actionTab === "ramp" ? "block" : "hidden"}
+              aria-hidden={actionTab !== "ramp"}
+            >
               <AnchorPanel
                 walletAddress={walletAddress}
                 onRequireWallet={() => setConnectModalOpen(true)}
-                onUsdcBalance={setUsdcBalance}
+                usdcBalance={usdcBalance}
+                refreshBalances={refreshBalances}
                 onRate={handleAnchorRate}
                 notify={showNotice}
                 onSettled={() => void refreshChain()}
-                registerRefresh={(refresh) => {
-                  anchorRefresh.current = refresh;
-                }}
               />
-            ) : (
-              <div key="limit-order-panel">
+            </div>
+
+            <div
+              className={actionTab === "order" ? "block" : "hidden"}
+              aria-hidden={actionTab !== "order"}
+            >
+              <div>
                 <div className="mb-5 flex items-end justify-between">
                   <div>
                     <h2 className="text-lg font-semibold text-white">Create limit order</h2>
@@ -1095,7 +1138,7 @@ function App() {
                 </div>
                 {message ? <div key="order-message" className="mt-4 flex items-start gap-2 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 text-xs text-slate-300"><Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" /><div>{message}</div></div> : null}
               </div>
-            )}
+            </div>
 
             {!walletAddress ? (
               <div

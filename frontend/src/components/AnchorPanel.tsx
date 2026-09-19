@@ -52,8 +52,10 @@ export interface AnchorPanelProps {
   walletAddress: string;
   /** Opens the shared Freighter prompt for any protected bridge action. */
   onRequireWallet: () => void;
-  /** Called whenever the on-chain USDC balance is re-read. */
-  onUsdcBalance: (balance: number) => void;
+  /** Shared SAC balance owned by App so every tab renders the same value. */
+  usdcBalance: number;
+  /** Re-reads XLM and USDC balances in App. */
+  refreshBalances: () => Promise<void>;
   /** TRY per 1 USDC, so the order form can price triggers in lira. */
   onRate: (tryPerUsdc: number, label: string) => void;
   notify: (
@@ -64,8 +66,6 @@ export interface AnchorPanelProps {
   ) => void;
   /** Refresh the rest of the terminal after USDC moves. */
   onSettled: () => void;
-  /** Hands the parent a way to re-read the USDC balance after a vault action. */
-  registerRefresh: (refresh: () => void) => void;
 }
 
 type Flow = "deposit" | "withdraw";
@@ -87,18 +87,17 @@ const messageOf = (error: unknown): string =>
 export default function AnchorPanel({
   walletAddress,
   onRequireWallet,
-  onUsdcBalance,
+  usdcBalance,
+  refreshBalances,
   onRate,
   notify,
   onSettled,
-  registerRefresh,
 }: AnchorPanelProps) {
   const [cfg, setCfg] = useState<AnchorConfig | null>(null);
   const [discoveryError, setDiscoveryError] = useState("");
   const [info, setInfo] = useState<Sep6Info | null>(null);
 
   const [trustlineReady, setTrustlineReady] = useState(false);
-  const [usdcBalance, setUsdcBalance] = useState(0);
   const [enablingTrustline, setEnablingTrustline] = useState(false);
 
   const [flow, setFlow] = useState<Flow>("deposit");
@@ -139,34 +138,29 @@ export default function AnchorPanel({
     };
   }, []);
 
-  // ── Trustline + USDC balance ──────────────────────────────────────────────
-  const refreshBalance = useCallback(async (): Promise<void> => {
+  // Trustline readiness remains anchor-specific. The actual balance is read
+  // globally from the SAC by App so it is available before this panel mounts.
+  const refreshTrustline = useCallback(async (): Promise<void> => {
     if (!cfg || !walletAddress) return;
     try {
       const state = await getTrustlineState(cfg, walletAddress);
       setTrustlineReady(state.exists);
-      const balance = Number(state.balance) || 0;
-      setUsdcBalance(balance);
-      onUsdcBalance(balance);
     } catch {
-      // An unfunded or unreachable account is not an anchor failure; the panel
-      // keeps its last known state rather than shouting at the user.
+      // An unfunded or unreachable account is not an anchor failure.
     }
-  }, [cfg, walletAddress, onUsdcBalance]);
+  }, [cfg, walletAddress]);
 
-  useEffect(() => {
-    registerRefresh(() => void refreshBalance());
-  }, [registerRefresh, refreshBalance]);
+  const refreshPanelBalances = useCallback(async (): Promise<void> => {
+    await Promise.all([refreshTrustline(), refreshBalances()]);
+  }, [refreshBalances, refreshTrustline]);
 
   useEffect(() => {
     if (!walletAddress) {
       setTrustlineReady(false);
-      setUsdcBalance(0);
-      onUsdcBalance(0);
       return;
     }
-    void refreshBalance();
-  }, [walletAddress, refreshBalance, onUsdcBalance]);
+    void refreshPanelBalances();
+  }, [walletAddress, refreshPanelBalances]);
 
   // ── Indicative TRY price, refreshed as the user types ─────────────────────
   useEffect(() => {
@@ -251,7 +245,7 @@ export default function AnchorPanel({
           if (transaction.status === "completed") {
             stopPolling.current?.();
             stopPolling.current = null;
-            void refreshBalance();
+            void refreshPanelBalances();
             onSettled();
             notify(
               "success",
@@ -274,7 +268,7 @@ export default function AnchorPanel({
         () => notify("error", "Anchor session expired", "Sign in to the anchor again to keep tracking this transfer."),
       );
     },
-    [notify, onSettled, refreshBalance],
+    [notify, onSettled, refreshPanelBalances],
   );
 
   const enableUsdc = async (): Promise<void> => {
@@ -286,7 +280,7 @@ export default function AnchorPanel({
     setEnablingTrustline(true);
     try {
       const created = await ensureTrustline(cfg, walletAddress);
-      await refreshBalance();
+      await refreshPanelBalances();
       notify(
         "success",
         created ? "USDC enabled" : "USDC already enabled",
@@ -438,7 +432,7 @@ export default function AnchorPanel({
       const amount = Number(withdrawAmount.replace(",", ".")).toFixed(7);
       const hash = await sendWithdrawalPayment(cfg, walletAddress, withdrawal, amount);
       setPaymentSent(true);
-      await refreshBalance();
+      await refreshPanelBalances();
       notify(
         "success",
         "USDC sent to the anchor treasury",
@@ -493,7 +487,7 @@ export default function AnchorPanel({
         </div>
         <button
           type="button"
-          onClick={() => void refreshBalance()}
+          onClick={() => void refreshPanelBalances()}
           className="rounded-lg p-2 text-slate-600 transition hover:bg-slate-800 hover:text-cyan-300"
           aria-label="Refresh anchor balance"
         >
