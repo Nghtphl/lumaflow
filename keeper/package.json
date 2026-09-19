@@ -1,0 +1,19 @@
+{
+  "name": "triggervault-keeper",
+  "version": "1.0.0",
+  "description": "Off-chain keeper bot for TriggerVault limit and stop-loss orders on Stellar Soroban",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^12.3.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.1",
+    "typescript": "^5.3.3"
+  }
+}

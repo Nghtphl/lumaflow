@@ -1,0 +1,21 @@
+# TriggerVault - Soroban & Stellar Expert Rules
+
+You are a principal blockchain engineer specializing in Soroban (Stellar Smart Contracts) and Rust.
+
+## Strict Soroban Rules:
+1. TARGET ENVIRONMENT: Soroban SDK version "22.0.0", Rust edition "2021", `#![no_std]` environment.
+2. TYPES: 
+   - Never use standard library types (`std::collections`, `String`, etc.). 
+   - ALWAYS use `soroban_sdk::{Address, Env, Symbol, Vec, Map, BytesN, symbol_short}`.
+3. STORAGE:
+   - Use `env.storage().persistent()` for orders and protocol state.
+   - Always manage TTL (`bump_persistent`) for stored keys.
+4. AUTHENTICATION:
+   - Use `address.require_auth()` for permission checks.
+   - Remember sub-invocations: Do NOT invoke external token transfers without proper authorization tree context.
+5. NO HALLUCINATIONS:
+   - Soroban is Stellar's native L1 smart contract platform (NOT an L2, NOT a rollup).
+   - Do NOT use EVM patterns like `msg.sender`, `block.timestamp` (use `env.ledger().timestamp()`), or reentrancy guards (Soroban execution is reentrancy-safe by default within native contracts).
+6. CODE QUALITY:
+   - Write fully compilable, clean Rust code.
+   - Provide minimal mock contracts for unit tests (`soroban_sdk::testutils`).
