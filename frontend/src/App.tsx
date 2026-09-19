@@ -12,6 +12,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Terminal,
+  Zap,
   Wallet,
   X,
 } from "lucide-react";
@@ -68,6 +69,7 @@ const vault = new Contract(CONTRACT_ID);
 
 type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
+type ActionTab = "order" | "ramp";
 type LifecycleState = "idle" | "running" | "complete" | "error";
 type NoticeType = "success" | "error" | "info";
 
@@ -130,16 +132,6 @@ const lifecycleLabels = [
 
 const shortAddress = (value: string, start = 6, end = 5): string =>
   value ? `${value.slice(0, start)}…${value.slice(-end)}` : "—";
-
-const safeTime = (value: unknown): string => {
-  try {
-    const date = new Date(value as string);
-    if (Number.isNaN(date.getTime())) return "—";
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return "—";
-  }
-};
 
 const safeMessage = (value: unknown): string => {
   if (typeof value === "string") return value;
@@ -318,6 +310,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 }
 
 function App() {
+  const [actionTab, setActionTab] = useState<ActionTab>("order");
   const [walletAddress, setWalletAddress] = useState("");
   const [walletConnecting, setWalletConnecting] = useState(false);
   const [walletBalance, setWalletBalance] = useState(0);
@@ -880,10 +873,57 @@ function App() {
     }
   };
 
+  const executeOrder = async (id: number): Promise<void> => {
+    if (!walletAddress || operationLock.current) return;
+    operationLock.current = true;
+    setMessage("");
+    try {
+      const hash = await submitContractOperation("execute_order", [
+        xdr.ScVal.scvU32(id),
+        Address.fromString(walletAddress).toScVal(),
+      ]);
+      setLifecycle("complete");
+      await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+      anchorRefresh.current?.();
+      setMessage(`Order #${id} executed on ledger: ${hash}`);
+      showNotice(
+        "success",
+        `Order #${id} executed`,
+        "The swap settled atomically and the keeper reward was paid from realized output.",
+        hash,
+      );
+    } catch (error) {
+      const detail = safeMessage(error) || "Execution failed";
+      setMessage(detail);
+      if (detail === SIGNATURE_REJECTED_MESSAGE) {
+        setLifecycle("idle");
+        showNotice("error", "Signature Rejected", "Transaction rejected by wallet.");
+      } else if (detail === PENDING_CONFIRMATION_MESSAGE) {
+        setLifecycle("idle");
+        showNotice("info", "Confirmation Pending", detail);
+        await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+      } else {
+        setLifecycle("error");
+        if (detail !== WRONG_NETWORK_MESSAGE) {
+          showNotice("error", "Execution Failed", detail);
+        }
+      }
+    } finally {
+      setLifecycle((current) => (current === "running" ? "error" : current));
+      operationLock.current = false;
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-slate-200 selection:bg-cyan-500/30">
+    <div className="relative min-h-screen overflow-hidden bg-[#0B0F19] text-slate-100 selection:bg-cyan-500/30">
       <style>{`@keyframes toast-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }`}</style>
-      <div className="fixed right-4 top-4 z-50 flex w-[min(390px,calc(100vw-2rem))] flex-col gap-2">
+      <div className="pointer-events-none fixed inset-0">
+        <div className="absolute -left-40 -top-40 h-[34rem] w-[34rem] rounded-full bg-cyan-500/10 blur-[120px]" />
+        <div className="absolute right-[-12rem] top-1/4 h-[32rem] w-[32rem] rounded-full bg-violet-600/10 blur-[130px]" />
+        <div className="absolute bottom-[-14rem] left-1/3 h-[28rem] w-[28rem] rounded-full bg-blue-500/10 blur-[120px]" />
+      </div>
+
+      <div className="fixed right-4 top-20 z-50 flex w-[min(390px,calc(100vw-2rem))] flex-col gap-2">
         {notices.map((notice) => (
           <ToastNotice
             key={notice.id}
@@ -894,139 +934,185 @@ function App() {
           />
         ))}
       </div>
-      <header className="border-b border-slate-800 bg-slate-950/95">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-4 py-3 lg:px-6">
+
+      <header className="relative z-20 border-b border-slate-800/70 bg-[#0B0F19]/80 backdrop-blur-xl">
+        <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center border border-cyan-500/30 bg-cyan-500/10">
-              <Terminal className="h-5 w-5 text-cyan-400" />
+            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-blue-600 shadow-lg shadow-cyan-950/50">
+              <Zap className="h-5 w-5 fill-white text-white" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-sm font-semibold tracking-wide text-white">TRIGGERVAULT</h1>
-                <span className="border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[9px] text-amber-300">TESTNET</span>
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-base font-bold tracking-tight text-white">TriggerVault</h1>
+                <span className="hidden rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[10px] font-medium text-sky-300 sm:inline-flex">
+                  <span className="mr-1.5 h-1.5 w-1.5 rounded-full bg-sky-400" />
+                  Stellar Testnet
+                </span>
               </div>
-              <p className="font-mono text-[10px] text-slate-500">SOROBAN EXECUTION TERMINAL</p>
+              <p className="text-[11px] text-slate-500">Non-custodial FX automation</p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {walletAddress && <span className="hidden font-mono text-[10px] text-slate-500 sm:inline">BAL {(Number(usdcBalance) || 0).toFixed(2)} {COLLATERAL_SYMBOL} · {(Number(walletBalance) || 0).toFixed(2)} {TARGET_SYMBOL}</span>}
-            {walletAddress ? (
-              <div className="flex items-stretch border border-slate-700 bg-slate-900">
-                <div className="flex items-center gap-2 px-3 py-2 font-mono text-xs text-slate-200">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  <Wallet className="h-4 w-4 text-cyan-400" />
-                  {shortAddress(walletAddress, 8, 6)}
-                </div>
-                <button onClick={disconnectWallet} className="flex items-center gap-1.5 border-l border-slate-700 px-3 font-mono text-[10px] text-slate-500 hover:bg-rose-500/10 hover:text-rose-300"><LogOut className="h-3.5 w-3.5" />DISCONNECT</button>
+
+          {walletAddress ? (
+            <div className="flex items-center rounded-xl border border-slate-700/80 bg-slate-900/80 p-1 shadow-lg shadow-black/20">
+              <div className="hidden px-3 sm:block">
+                <p className="text-[9px] uppercase tracking-wider text-slate-500">Balance</p>
+                <p className="text-xs font-semibold text-white">{usdcBalance.toFixed(2)} USDC</p>
               </div>
-            ) : (
-              <button onClick={connectWallet} disabled={walletConnecting} className="flex items-center gap-2 border border-cyan-500/50 bg-slate-900 px-3 py-2 font-mono text-xs text-cyan-200 hover:border-cyan-400 disabled:cursor-wait disabled:opacity-70">
-                <Wallet className="h-4 w-4 text-cyan-400" />
-                {walletConnecting ? "CONNECTING..." : "CONNECT FREIGHTER"}
+              <div className="flex items-center gap-2 rounded-lg bg-slate-800/80 px-3 py-2 text-xs text-slate-200">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
+                <Wallet className="h-3.5 w-3.5 text-cyan-300" />
+                <span className="font-mono">{shortAddress(walletAddress, 6, 4)}</span>
+              </div>
+              <button
+                type="button"
+                onClick={disconnectWallet}
+                className="ml-1 rounded-lg p-2 text-slate-500 transition hover:bg-rose-500/10 hover:text-rose-300"
+                aria-label="Disconnect wallet"
+              >
+                <LogOut className="h-4 w-4" />
               </button>
-            )}
-          </div>
-        </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={connectWallet}
+              disabled={walletConnecting}
+              className="flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 px-4 py-2.5 text-sm font-semibold text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
+            >
+              {walletConnecting ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Wallet className="h-4 w-4" />}
+              {walletConnecting ? "Connecting" : "Connect Freighter"}
+            </button>
+          )}
+        </nav>
       </header>
 
-      <section className="border-b border-slate-800 bg-zinc-950">
-        <div className="mx-auto grid max-w-[1600px] grid-cols-2 divide-x divide-slate-800 border-x border-slate-800 md:grid-cols-4">
-          <TelemetryCell label="RPC LATENCY" value={telemetry.latency === null ? "—" : `${telemetry.latency} ms`} icon={<Activity className="h-3.5 w-3.5" />} healthy={telemetry.healthy} />
-          <TelemetryCell label="LATEST LEDGER" value={telemetry.ledger?.toLocaleString() || "—"} icon={<Gauge className="h-3.5 w-3.5" />} />
-          <TelemetryCell label="ACTIVE VAULT VALUE" value={`${(Number(activeValue) || 0).toFixed(2)} ${COLLATERAL_SYMBOL}${tryPerUsdc > 0 ? ` · ${(activeValue * tryPerUsdc).toFixed(0)} TL` : ""}`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
-          <div className="flex min-w-0 items-center justify-between gap-2 px-4 py-3">
+      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <section className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <TelemetryCell label="RPC latency" value={telemetry.latency === null ? "—" : `${telemetry.latency} ms`} icon={<Activity className="h-3.5 w-3.5" />} healthy={telemetry.healthy} />
+          <TelemetryCell label="Latest ledger" value={telemetry.ledger?.toLocaleString() || "—"} icon={<Gauge className="h-3.5 w-3.5" />} />
+          <TelemetryCell label="Active vault value" value={`${activeValue.toFixed(2)} USDC${tryPerUsdc > 0 ? ` · ${(activeValue * tryPerUsdc).toFixed(0)} TL` : ""}`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
+          <a
+            href={`https://stellar.expert/explorer/testnet/contract/${CONTRACT_ID}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex min-w-0 items-center justify-between rounded-xl border border-slate-800/80 bg-slate-900/50 px-4 py-3 backdrop-blur-xl transition hover:border-cyan-500/30 hover:bg-slate-800/60"
+          >
             <div className="min-w-0">
-              <p className="text-[9px] uppercase tracking-widest text-slate-500">Contract</p>
-              <p className="truncate font-mono text-xs text-slate-300">{CONTRACT_ID}</p>
+              <p className="text-[9px] uppercase tracking-widest text-slate-500">Vault contract</p>
+              <p className="mt-1 truncate font-mono text-xs text-slate-300">{shortAddress(CONTRACT_ID, 8, 6)}</p>
             </div>
-            <a href={`https://stellar.expert/explorer/testnet/contract/${CONTRACT_ID}`} target="_blank" rel="noreferrer" className="text-cyan-400 hover:text-cyan-300"><ExternalLink className="h-4 w-4" /></a>
-          </div>
-        </div>
-      </section>
+            <ExternalLink className="h-4 w-4 shrink-0 text-cyan-400" />
+          </a>
+        </section>
 
-      <main className="mx-auto grid max-w-[1600px] grid-cols-1 border-x border-slate-800 lg:grid-cols-[420px_1fr]">
-        <section className="border-b border-slate-800 bg-slate-950 p-4 lg:min-h-[calc(100vh-130px)] lg:border-b-0 lg:border-r">
-          <div className="mb-5 flex items-center justify-between">
-            <div><h2 className="text-sm font-semibold text-white">Vault Order Placement</h2><p className="mt-1 text-[11px] text-slate-500">Lira-denominated, slippage-bounded autonomous exit</p></div>
-            <span className="font-mono text-[10px] text-slate-500">BAL {(Number(usdcBalance) || 0).toFixed(4)} {COLLATERAL_SYMBOL}</span>
-          </div>
-
-          <AnchorPanel
-            walletAddress={walletAddress}
-            onUsdcBalance={setUsdcBalance}
-            onRate={handleAnchorRate}
-            notify={showNotice}
-            onSettled={() => void refreshChain()}
-            registerRefresh={(refresh) => {
-              anchorRefresh.current = refresh;
-            }}
-          />
-
-          <form onSubmit={submitOrder} className="space-y-4">
-            <Field label="INPUT COLLATERAL (FROM ANCHOR)" suffix={COLLATERAL_SYMBOL} value={amountIn} onChange={setAmountIn} disabled={lifecycle === "running"} />
-            <div className="grid grid-cols-4 gap-1.5">{[25, 50, 75, 100].map((percentage) => <button key={percentage} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="border border-slate-800 bg-zinc-950 py-1.5 font-mono text-[10px] text-slate-400 hover:border-cyan-500/50 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40">{percentage}%</button>)}</div>
-            <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-slate-600" /></div>
-            <Field label="MINIMUM OUTPUT" suffix={TARGET_SYMBOL} value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} />
-            <div>
-              <div className="mb-2 flex items-center justify-between"><label className="text-[10px] font-medium tracking-widest text-slate-500">SLIPPAGE TOLERANCE</label><span className="font-mono text-xs text-cyan-400">{slippage.toFixed(1)}%</span></div>
-              <div className="grid grid-cols-3 gap-1.5">{[0.1, 0.5, 1].map((value) => <button key={value} type="button" disabled={lifecycle === "running"} onClick={() => setSlippage(value)} className={`border py-2 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-40 ${slippage === value ? "border-cyan-500 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-zinc-950 text-slate-400"}`}>{value.toFixed(1)}%</button>)}</div>
+        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,520px)_minmax(0,1fr)]">
+          <section className="rounded-2xl border border-slate-800/80 bg-slate-900/70 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl sm:p-5">
+            <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-950/70 p-1" role="tablist" aria-label="Vault actions">
+              {([
+                { id: "order", label: "Create Limit Order" },
+                { id: "ramp", label: "Bank Ramp (TRY ⇄ USDC)" },
+              ] as const).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={actionTab === item.id}
+                  onClick={() => setActionTab(item.id)}
+                  className={`rounded-lg px-3 py-2.5 text-xs font-semibold transition ${
+                    actionTab === item.id
+                      ? "bg-slate-800 text-white shadow-lg shadow-black/30"
+                      : "text-slate-500 hover:text-slate-300"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
             </div>
-            <Field label="KEEPER BOUNTY" suffix="BPS" value={feeBps} onChange={setFeeBps} disabled={lifecycle === "running"} />
 
-            <div className="border border-slate-800 bg-zinc-950 p-3 font-mono text-[11px]">
-              <Breakdown label="Swap input (full collateral)" value={`${numericAmount.toFixed(7)} ${COLLATERAL_SYMBOL}`} />
-              <Breakdown label="Keeper reward" value={`${keeperFeePercent}% of realized ${TARGET_SYMBOL} output`} />
-              <p className="mt-2 text-[9px] leading-relaxed text-slate-600">Minimum output is before the keeper fee. You receive the realized output minus the keeper reward.</p>
-              <Breakdown label="Effective trigger price" value={`${effectivePrice.toFixed(7)} ${COLLATERAL_SYMBOL}/${TARGET_SYMBOL}`} />
-              <Breakdown
-                label={`Target: 1 ${TARGET_SYMBOL}`}
-                value={tryPerUsdc > 0 ? `${triggerPriceTry.toFixed(2)} TL` : "— TL"}
-                strong
+            {actionTab === "ramp" ? (
+              <AnchorPanel
+                walletAddress={walletAddress}
+                onUsdcBalance={setUsdcBalance}
+                onRate={handleAnchorRate}
+                notify={showNotice}
+                onSettled={() => void refreshChain()}
+                registerRefresh={(refresh) => {
+                  anchorRefresh.current = refresh;
+                }}
               />
-              {rateSource && (
-                <p className="mt-2 text-[9px] leading-relaxed text-slate-600">{rateSource}</p>
-              )}
+            ) : (
+              <>
+                <div className="mb-5 flex items-end justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-white">Create limit order</h2>
+                    <p className="mt-1 text-xs text-slate-500">Swap USDC to XLM when your target can be met.</p>
+                  </div>
+                  <span className="rounded-full bg-slate-800/80 px-3 py-1 text-[10px] text-slate-400">{usdcBalance.toFixed(2)} USDC</span>
+                </div>
+
+                <form onSubmit={submitOrder} className="space-y-3">
+                  <Field label="YOU DEPOSIT" suffix={COLLATERAL_SYMBOL} value={amountIn} onChange={setAmountIn} disabled={lifecycle === "running"} fiatValue={tryPerUsdc > 0 ? `≈ ${(numericAmount * tryPerUsdc).toFixed(2)} TRY` : undefined} />
+                  <div className="grid grid-cols-4 gap-2">{[25, 50, 75, 100].map((percentage) => <button key={percentage} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="rounded-lg border border-slate-800 bg-slate-950/50 py-2 text-[10px] font-medium text-slate-400 transition hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-40">{percentage}%</button>)}</div>
+                  <div className="relative flex h-5 justify-center"><span className="absolute grid h-8 w-8 place-items-center rounded-full border border-slate-700 bg-slate-900 text-slate-400"><ArrowDown className="h-4 w-4" /></span></div>
+                  <Field label="MINIMUM RECEIVE" suffix={TARGET_SYMBOL} value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} fiatValue={tryPerUsdc > 0 && numericMinOut > 0 ? `≈ ${(numericMinOut * effectivePrice * tryPerUsdc).toFixed(2)} TRY` : undefined} />
+
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <div className="mb-2 flex items-center justify-between"><span className="text-[10px] font-medium tracking-wider text-slate-500">SLIPPAGE</span><span className="text-xs text-cyan-300">{slippage.toFixed(1)}%</span></div>
+                      <div className="grid grid-cols-3 gap-1.5">{[0.1, 0.5, 1].map((value) => <button key={value} type="button" disabled={lifecycle === "running"} onClick={() => setSlippage(value)} className={`rounded-lg border py-2 text-[10px] transition ${slippage === value ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-slate-950/50 text-slate-500 hover:text-slate-300"}`}>{value}%</button>)}</div>
+                    </div>
+                    <Field label="KEEPER BOUNTY" suffix="BPS" value={feeBps} onChange={setFeeBps} disabled={lifecycle === "running"} compact />
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/50 p-4 text-xs">
+                    <Breakdown label="Full swap input" value={`${numericAmount.toFixed(4)} USDC`} />
+                    <Breakdown label="Keeper reward" value={`${keeperFeePercent}% of output`} />
+                    <Breakdown label="Trigger price" value={tryPerUsdc > 0 ? `${triggerPriceTry.toFixed(2)} TRY / XLM` : "Rate unavailable"} strong />
+                    {rateSource && <p className="mt-2 text-[9px] text-slate-600">{rateSource}</p>}
+                  </div>
+
+                  <button type="submit" disabled={lifecycle === "running"} className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 py-3.5 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+                    {lifecycle === "running" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                    Create limit order
+                  </button>
+                </form>
+
+                <div className="mt-5 border-t border-slate-800/80 pt-4">
+                  <div className="grid grid-cols-4 gap-1">{lifecycleLabels.map((label, index) => { const done = lifecycleStep > index || lifecycle === "complete"; const current = lifecycle === "running" && lifecycleStep === index; return <div key={label} className="text-center"><div className={`mx-auto mb-2 grid h-7 w-7 place-items-center rounded-full border ${done ? "border-emerald-500 bg-emerald-500 text-slate-950" : current ? "border-cyan-400 bg-cyan-500/10 text-cyan-300" : "border-slate-800 text-slate-600"}`}>{done ? <Check className="h-3.5 w-3.5" /> : current ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <span className="text-[10px]">{index + 1}</span>}</div><span className="text-[9px] leading-tight text-slate-600">{label}</span></div>; })}</div>
+                </div>
+                {message && <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 text-xs text-slate-300"><Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" />{message}</div>}
+              </>
+            )}
+          </section>
+
+          <section className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-900/70 shadow-2xl shadow-black/40 backdrop-blur-xl">
+            <div className="flex flex-col gap-4 border-b border-slate-800/80 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div><h2 className="text-lg font-semibold text-white">Orders</h2><p className="mt-1 text-xs text-slate-500">Live execution queue and settlement history</p></div>
+              <button onClick={() => void refreshChain()} className="flex items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/50 px-3 py-2 text-[10px] font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />Refresh</button>
             </div>
+            <div className="flex gap-1 border-b border-slate-800/80 p-2">{([{ id: "active", label: "Active" }, { id: "history", label: "History" }] as const).map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === item.id ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"}`}>{item.label}</button>)}</div>
 
-            <button type="submit" disabled={lifecycle === "running"} className="flex w-full items-center justify-center gap-2 bg-cyan-500 py-3 text-xs font-bold tracking-wide text-slate-950 hover:bg-cyan-400 disabled:cursor-not-allowed disabled:opacity-60">
-              {lifecycle === "running" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
-              DEPOSIT & CREATE LIMIT ORDER
-            </button>
-          </form>
-
-          <div className="mt-5 border-t border-slate-800 pt-4">
-            <p className="mb-3 text-[10px] font-medium tracking-widest text-slate-500">TRANSACTION LIFECYCLE</p>
-            <div className="grid grid-cols-4 gap-1">{lifecycleLabels.map((label, index) => { const done = lifecycleStep > index || lifecycle === "complete"; const current = lifecycle === "running" && lifecycleStep === index; return <div key={label} className="text-center"><div className={`mx-auto mb-2 grid h-7 w-7 place-items-center rounded-full border ${done ? "border-emerald-500 bg-emerald-500/10 text-emerald-400" : current ? "border-cyan-400 bg-cyan-500/10 text-cyan-300" : "border-slate-800 text-slate-600"}`}>{done ? <Check className="h-3.5 w-3.5" /> : current ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <span className="font-mono text-[10px]">{index + 1}</span>}</div><span className="text-[9px] leading-tight text-slate-500">{label}</span></div>; })}</div>
-          </div>
-          {message && <div className="mt-4 flex items-start gap-2 border border-slate-700 bg-slate-900 p-3 text-xs text-slate-300"><Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" />{message}</div>}
-        </section>
-
-        <section className="min-w-0 bg-zinc-950">
-          <div className="flex flex-col gap-3 border-b border-slate-800 p-4 sm:flex-row sm:items-center sm:justify-between">
-            <div><h2 className="text-sm font-semibold text-white">On-Chain Orders & Telemetry</h2><p className="mt-1 text-[11px] text-slate-500">Deterministic execution queue and settlement history</p></div>
-            <button onClick={() => void refreshChain()} className="flex items-center gap-2 border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-[10px] text-slate-400 hover:text-white"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />REFRESH CHAIN</button>
-          </div>
-          <div className="flex border-b border-slate-800">{([{ id: "active", label: "ACTIVE LIMIT ORDERS" }, { id: "history", label: "EXECUTED / HISTORICAL" }] as const).map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={`border-r border-slate-800 px-5 py-3 font-mono text-[10px] tracking-wide ${tab === item.id ? "border-b-2 border-b-cyan-400 bg-slate-900 text-cyan-300" : "text-slate-500 hover:text-slate-300"}`}>{item.label}</button>)}</div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] text-left">
-              <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[9px] uppercase tracking-wider text-slate-500"><tr><th className="px-4 py-3">Order</th><th className="px-4 py-3">Owner</th><th className="px-4 py-3 text-right">Collateral</th><th className="px-4 py-3 text-right">Min Output</th><th className="px-4 py-3 text-right">Bounty</th><th className="px-4 py-3">First seen</th><th className="px-4 py-3 text-right">Action</th></tr></thead>
-              <tbody className="divide-y divide-slate-800/80">{visibleOrders.map((order) => <tr key={order.id} className="font-mono text-xs hover:bg-slate-900/60"><td className="px-4 py-3 text-cyan-400">#{order.id}</td><td className="px-4 py-3 text-slate-400">{shortAddress(String(order.owner || ""))}</td><td className="px-4 py-3 text-right text-white">{(Number(order.amountIn) || 0).toFixed(4)} {COLLATERAL_SYMBOL}</td><td className="px-4 py-3 text-right text-slate-300"><span>≥ {(Number(order.minAmountOut) || 0).toFixed(4)} {TARGET_SYMBOL}</span>{tryPerUsdc > 0 && Number(order.minAmountOut) > 0 && <span className="block text-[10px] text-slate-600">1 {TARGET_SYMBOL} = {((Number(order.amountIn) / Number(order.minAmountOut)) * tryPerUsdc).toFixed(2)} TL</span>}</td><td className="px-4 py-3 text-right text-amber-300">{((Number(order.feeBps) || 0) / 100).toFixed(2)}%</td><td className="px-4 py-3 text-slate-500">{order.observedAt ? safeTime(order.observedAt) : "—"}</td><td className="px-4 py-3 text-right">{order.status === "Active" && order.owner === walletAddress ? <button disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3 w-3" />CANCEL & RECLAIM</button> : <span className="text-slate-600">{String(order.status || "").toUpperCase()}</span>}</td></tr>)}</tbody>
-            </table>
-            {visibleOrders.length === 0 && <div className="grid min-h-64 place-items-center border-b border-slate-800"><div className="max-w-md px-6 text-center">{tab === "history" ? <><div className="relative mx-auto mb-4 h-12 w-12"><span className="absolute inset-0 animate-ping rounded-full border border-cyan-500/30" /><span className="absolute inset-2 animate-pulse rounded-full border border-cyan-400/50 bg-cyan-500/5" /><Activity className="absolute inset-0 m-auto h-5 w-5 text-cyan-400" /></div><p className="font-mono text-xs text-slate-400">NO HISTORICAL ORDERS</p><p className="mt-2 text-[10px] leading-relaxed text-slate-600">Autonomous keeper engine is actively scanning order book for price triggers</p></> : <><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="font-mono text-xs text-slate-500">NO ACTIVE ORDERS</p><p className="mt-1 text-[10px] text-slate-700">Waiting for contract state updates</p></>}</div></div>}
-          </div>
-        </section>
+            <div className="overflow-x-auto p-2">
+              <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-left">
+                <thead className="text-[9px] uppercase tracking-wider text-slate-600"><tr><th className="px-3 py-1">Order</th><th className="px-3 py-1">Status</th><th className="px-3 py-1">Owner</th><th className="px-3 py-1 text-right">Sell</th><th className="px-3 py-1 text-right">Minimum receive</th><th className="px-3 py-1 text-right">Action</th></tr></thead>
+                <tbody>{visibleOrders.map((order) => <tr key={order.id} className="group bg-slate-950/40 text-xs transition hover:bg-slate-800/40"><td className="rounded-l-xl px-3 py-3 font-semibold text-cyan-300">#{order.id}</td><td className="px-3 py-3"><span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold ${order.status === "Active" ? "bg-cyan-500/10 text-cyan-300" : order.status === "Executed" ? "bg-emerald-500/10 text-emerald-300" : "bg-slate-700/50 text-slate-400"}`}>{order.status === "Executed" ? "Filled" : order.status}</span></td><td className="px-3 py-3 font-mono text-slate-500">{shortAddress(order.owner)}</td><td className="px-3 py-3 text-right font-medium text-white">{order.amountIn.toFixed(2)} USDC{tryPerUsdc > 0 && <span className="block text-[10px] font-normal text-slate-600">≈ {(order.amountIn * tryPerUsdc).toFixed(2)} TRY</span>}</td><td className="px-3 py-3 text-right text-slate-300">{order.minAmountOut.toFixed(4)} XLM<span className="block text-[10px] text-slate-600">{(order.feeBps / 100).toFixed(2)}% bounty</span></td><td className="rounded-r-xl px-3 py-3 text-right"><div className="flex justify-end gap-2">{order.status === "Active" && walletAddress && <button type="button" disabled={lifecycle === "running"} onClick={() => void executeOrder(order.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-[10px] font-bold text-slate-950 transition hover:bg-amber-300 disabled:opacity-40">⚡ Execute (Demo)</button>}{order.status === "Active" && order.owner === walletAddress && <button type="button" disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40">Cancel</button>}</div></td></tr>)}</tbody>
+              </table>
+              {visibleOrders.length === 0 && <div className="grid min-h-64 place-items-center"><div className="max-w-sm px-6 text-center">{tab === "history" ? <><div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-cyan-500/10"><Activity className="h-5 w-5 text-cyan-400" /></div><p className="text-sm font-medium text-slate-300">No settled orders yet</p><p className="mt-2 text-xs leading-relaxed text-slate-600">Executed and cancelled orders will appear here.</p></> : <><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="text-sm font-medium text-slate-400">No active orders</p><p className="mt-2 text-xs text-slate-600">Create a limit order to start the keeper flow.</p></>}</div></div>}
+            </div>
+          </section>
+        </div>
       </main>
     </div>
   );
 }
 
 function TelemetryCell({ label, value, icon, healthy }: { label: string; value: string; icon: React.ReactNode; healthy?: boolean }) {
-  return <div className="px-4 py-3"><div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-slate-500">{icon}{label}</div><div className="flex items-center gap-2 font-mono text-xs text-slate-200">{healthy !== undefined && <span className={`h-1.5 w-1.5 rounded-full ${healthy ? "bg-emerald-400" : "bg-rose-400"}`} />}{value}</div></div>;
+  return <div className="rounded-xl border border-slate-800/80 bg-slate-900/50 px-4 py-3 backdrop-blur-xl"><div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-widest text-slate-500">{icon}{label}</div><div className="flex items-center gap-2 text-xs font-medium text-slate-200">{healthy !== undefined && <span className={`h-1.5 w-1.5 rounded-full ${healthy ? "bg-emerald-400" : "bg-rose-400"}`} />}{value}</div></div>;
 }
 
-function Field({ label, suffix, value, onChange, disabled = false }: { label: string; suffix: string; value: string; onChange: (value: string) => void; disabled?: boolean }) {
-  return <label className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className={`flex border border-slate-800 bg-zinc-950 focus-within:border-cyan-500/60 ${disabled ? "opacity-50" : ""}`}><input type="text" inputMode="decimal" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value.replace(",", "."))} className="min-w-0 flex-1 bg-transparent px-3 py-3 font-mono text-sm text-white outline-none disabled:cursor-not-allowed" /><span className="border-l border-slate-800 px-3 py-3 font-mono text-xs text-slate-500">{suffix}</span></div></label>;
+function Field({ label, suffix, value, onChange, disabled = false, fiatValue, compact = false }: { label: string; suffix: string; value: string; onChange: (value: string) => void; disabled?: boolean; fiatValue?: string; compact?: boolean }) {
+  return <label className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className={`flex items-center rounded-xl border border-slate-800 bg-slate-950/60 transition focus-within:border-cyan-500/60 focus-within:ring-2 focus-within:ring-cyan-500/10 ${disabled ? "opacity-50" : ""}`}><div className="min-w-0 flex-1"><input type="text" inputMode="decimal" value={value} disabled={disabled} onChange={(event) => onChange(event.target.value.replace(",", "."))} className={`w-full bg-transparent px-4 pt-3 font-semibold text-white outline-none disabled:cursor-not-allowed ${compact ? "pb-3 text-base" : fiatValue ? "pb-0.5 text-2xl" : "pb-3 text-2xl"}`} />{fiatValue && <span className="block px-4 pb-3 text-xs text-slate-500">{fiatValue}</span>}</div><span className="mr-3 rounded-full border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200">{suffix}</span></div></label>;
 }
 
 function Breakdown({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
@@ -1037,7 +1123,7 @@ function ToastNotice({ notice, onClose }: { notice: Notice; onClose: () => void 
   const success = notice.type === "success";
   const info = notice.type === "info";
   return (
-    <div className={`animate-[toast-in_180ms_ease-out] border bg-slate-950 shadow-2xl ${success ? "border-emerald-500/50 shadow-emerald-950/40" : info ? "border-cyan-500/50 shadow-cyan-950/40" : "border-rose-500/50 shadow-rose-950/40"}`} role="status" aria-live="polite">
+    <div className={`animate-[toast-in_180ms_ease-out] rounded-xl border bg-slate-950/95 shadow-2xl backdrop-blur-xl ${success ? "border-emerald-500/50 shadow-emerald-950/40" : info ? "border-cyan-500/50 shadow-cyan-950/40" : "border-rose-500/50 shadow-rose-950/40"}`} role="status" aria-live="polite">
       <div className="flex items-start gap-3 p-4">
         <div className={`mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full ${success ? "bg-emerald-500/15 text-emerald-400" : info ? "bg-cyan-500/15 text-cyan-400" : "bg-rose-500/15 text-rose-400"}`}>
           {success ? <Check className="h-4 w-4" /> : <X className="h-4 w-4" />}

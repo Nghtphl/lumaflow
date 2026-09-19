@@ -4,6 +4,7 @@ import {
   ArrowUpFromLine,
   Banknote,
   Check,
+  Copy,
   ExternalLink,
   Landmark,
   LoaderCircle,
@@ -98,6 +99,7 @@ export default function AnchorPanel({
   const [withdrawQuote, setWithdrawQuote] = useState<Sep38Price | null>(null);
   const [withdrawal, setWithdrawal] = useState<WithdrawInstructions | null>(null);
   const [paymentSent, setPaymentSent] = useState(false);
+  const [copied, setCopied] = useState("");
 
   const [tracked, setTracked] = useState<Sep6Transaction | null>(null);
   const stopPolling = useRef<(() => void) | null>(null);
@@ -231,6 +233,8 @@ export default function AnchorPanel({
         (transaction) => {
           setTracked(transaction);
           if (transaction.status === "completed") {
+            stopPolling.current?.();
+            stopPolling.current = null;
             void refreshBalance();
             onSettled();
             notify(
@@ -433,20 +437,27 @@ export default function AnchorPanel({
     [cfg],
   );
 
+  const copyValue = (label: string, value: string): void => {
+    void navigator.clipboard.writeText(value).then(() => {
+      setCopied(label);
+      window.setTimeout(() => setCopied(""), 1_500);
+    });
+  };
+
   return (
-    <div className="mb-5 border border-slate-800 bg-zinc-950">
-      <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2.5">
+    <div>
+      <div className="mb-5 flex items-center justify-between">
         <div className="flex min-w-0 items-center gap-2">
-          <Landmark className="h-4 w-4 shrink-0 text-cyan-400" />
+          <div className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-500/10 text-cyan-300"><Landmark className="h-4 w-4" /></div>
           <div className="min-w-0">
-            <p className="text-xs font-semibold text-white">Fund your vault</p>
-            <p className="truncate font-mono text-[9px] text-slate-500">{anchorLabel}</p>
+            <p className="text-lg font-semibold text-white">Bank ramp</p>
+            <p className="truncate text-[10px] text-slate-500">{anchorLabel}</p>
           </div>
         </div>
         <button
           type="button"
           onClick={() => void refreshBalance()}
-          className="text-slate-600 hover:text-cyan-300"
+          className="rounded-lg p-2 text-slate-600 transition hover:bg-slate-800 hover:text-cyan-300"
           aria-label="Refresh anchor balance"
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -463,13 +474,13 @@ export default function AnchorPanel({
           Reading stellar.toml…
         </p>
       ) : (
-        <div className="px-3 py-3">
-          <div className="mb-3 flex items-center justify-between border border-slate-800 bg-slate-950 px-3 py-2">
+        <div>
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-slate-800/80 bg-slate-950/50 px-4 py-3">
             <div>
               <p className="text-[9px] uppercase tracking-widest text-slate-500">
                 {cfg.asset.code} (anchor)
               </p>
-              <p className="font-mono text-sm text-white">{usdcBalance.toFixed(4)}</p>
+              <p className="text-xl font-semibold text-white">{usdcBalance.toFixed(2)} <span className="text-xs font-medium text-slate-500">{cfg.asset.code}</span></p>
             </div>
             {!walletAddress ? (
               <span className="font-mono text-[10px] text-slate-600">CONNECT WALLET</span>
@@ -478,7 +489,7 @@ export default function AnchorPanel({
                 <button
                   type="button"
                   onClick={() => void openDeposit()}
-                  className="flex items-center gap-1.5 border border-cyan-500/50 bg-cyan-500/10 px-2.5 py-1.5 font-mono text-[10px] text-cyan-200 hover:border-cyan-400"
+                  className="flex items-center gap-1.5 rounded-lg bg-cyan-400 px-3 py-2 text-[10px] font-semibold text-slate-950 transition hover:bg-cyan-300"
                 >
                   <ArrowDownToLine className="h-3 w-3" />
                   DEPOSIT TRY
@@ -487,7 +498,7 @@ export default function AnchorPanel({
                   type="button"
                   onClick={() => void openWithdraw()}
                   disabled={usdcBalance <= 0}
-                  className="flex items-center gap-1.5 border border-slate-700 px-2.5 py-1.5 font-mono text-[10px] text-slate-300 hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="flex items-center gap-1.5 rounded-lg border border-slate-700 px-3 py-2 text-[10px] font-semibold text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <ArrowUpFromLine className="h-3 w-3" />
                   TO IBAN
@@ -519,7 +530,7 @@ export default function AnchorPanel({
           )}
 
           {flow === "deposit" && (
-            <div className="space-y-3 border-t border-slate-800 pt-3">
+            <div className="space-y-4 border-t border-slate-800/80 pt-4">
               <div className="flex items-center justify-between">
                 <p className="text-[10px] font-medium tracking-widest text-slate-500">
                   DEPOSIT TRY
@@ -535,21 +546,21 @@ export default function AnchorPanel({
                     <span className="mb-1.5 block text-[10px] tracking-widest text-slate-500">
                       AMOUNT
                     </span>
-                    <div className="flex border border-slate-800 bg-zinc-950 focus-within:border-cyan-500/60">
+                    <div className="flex items-center rounded-xl border border-slate-800 bg-slate-950/60 focus-within:border-cyan-500/60 focus-within:ring-2 focus-within:ring-cyan-500/10">
                       <input
                         type="text"
                         inputMode="decimal"
                         value={tryAmount}
                         onChange={(event) => setTryAmount(event.target.value.replace(",", "."))}
-                        className="min-w-0 flex-1 bg-transparent px-3 py-2.5 font-mono text-sm text-white outline-none"
+                        className="min-w-0 flex-1 bg-transparent px-4 py-3 text-2xl font-semibold text-white outline-none"
                       />
-                      <span className="border-l border-slate-800 px-3 py-2.5 font-mono text-xs text-slate-500">
+                      <span className="mr-3 rounded-full border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200">
                         TRY
                       </span>
                     </div>
                   </label>
 
-                  <div className="border border-slate-800 bg-slate-950 p-2.5 font-mono text-[10px]">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/50 p-3 text-[10px]">
                     {quoteError ? (
                       <p className="text-rose-300">{quoteError}</p>
                     ) : quote ? (
@@ -587,7 +598,7 @@ export default function AnchorPanel({
                     type="button"
                     onClick={() => void requestDeposit()}
                     disabled={busy}
-                    className="flex w-full items-center justify-center gap-2 bg-cyan-500 py-2.5 text-[11px] font-bold tracking-wide text-slate-950 hover:bg-cyan-400 disabled:cursor-wait disabled:opacity-60"
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 py-3.5 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
                   >
                     {busy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Banknote className="h-3.5 w-3.5" />}
                     GET BANK INSTRUCTIONS
@@ -597,15 +608,15 @@ export default function AnchorPanel({
 
               {deposit && (
                 <>
-                  <div className="border border-slate-800 bg-slate-950 p-2.5">
+                  <div className="rounded-xl border border-cyan-500/20 bg-slate-950/80 p-3 shadow-inner shadow-black/20">
                     {deposit.fields.map((field) => (
-                      <div
+                      <CopyDetail
                         key={`${field.label}-${field.value}`}
-                        className="flex items-start justify-between gap-3 py-1 font-mono text-[10px]"
-                      >
-                        <span className="shrink-0 text-slate-500">{field.label}</span>
-                        <span className="break-all text-right text-slate-200">{field.value}</span>
-                      </div>
+                        label={field.label}
+                        value={field.value}
+                        copied={copied === field.label}
+                        onCopy={copyValue}
+                      />
                     ))}
                     {deposit.reference && (
                       <p className="mt-2 border-t border-slate-800 pt-2 text-[9px] leading-relaxed text-amber-300">
@@ -619,7 +630,7 @@ export default function AnchorPanel({
                     type="button"
                     onClick={() => void confirmBankTransfer()}
                     disabled={busy || (tracked ? isTerminal(tracked.status) : false)}
-                    className="flex w-full items-center justify-center gap-2 border border-emerald-500/50 bg-emerald-500/10 py-2.5 font-mono text-[10px] tracking-wide text-emerald-200 hover:border-emerald-400 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 py-3 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {busy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                     I SENT THE TRY (SIMULATE BANK TRANSFER)
@@ -636,7 +647,7 @@ export default function AnchorPanel({
           )}
 
           {flow === "withdraw" && (
-            <div className="space-y-3 border-t border-slate-800 pt-3">
+            <div className="space-y-4 border-t border-slate-800/80 pt-4">
               <div className="flex items-center justify-between">
                 <p className="text-[10px] font-medium tracking-widest text-slate-500">
                   WITHDRAW TO IBAN
@@ -652,7 +663,7 @@ export default function AnchorPanel({
                     <span className="mb-1.5 block text-[10px] tracking-widest text-slate-500">
                       AMOUNT
                     </span>
-                    <div className="flex border border-slate-800 bg-zinc-950 focus-within:border-cyan-500/60">
+                    <div className="flex items-center rounded-xl border border-slate-800 bg-slate-950/60 focus-within:border-cyan-500/60 focus-within:ring-2 focus-within:ring-cyan-500/10">
                       <input
                         type="text"
                         inputMode="decimal"
@@ -660,14 +671,14 @@ export default function AnchorPanel({
                         onChange={(event) =>
                           setWithdrawAmount(event.target.value.replace(",", "."))
                         }
-                        className="min-w-0 flex-1 bg-transparent px-3 py-2.5 font-mono text-sm text-white outline-none"
+                        className="min-w-0 flex-1 bg-transparent px-4 py-3 text-2xl font-semibold text-white outline-none"
                       />
-                      <span className="border-l border-slate-800 px-3 py-2.5 font-mono text-xs text-slate-500">
+                      <span className="mr-3 rounded-full border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200">
                         {cfg.asset.code}
                       </span>
                     </div>
                   </label>
-                  <div className="border border-slate-800 bg-slate-950 p-2.5 font-mono text-[10px]">
+                  <div className="rounded-xl border border-slate-800/80 bg-slate-950/50 p-3 text-[10px]">
                     <div className="flex justify-between py-0.5">
                       <span className="text-slate-500">You receive</span>
                       <span className="text-cyan-300">
@@ -682,7 +693,7 @@ export default function AnchorPanel({
                     type="button"
                     onClick={() => void requestWithdraw()}
                     disabled={busy}
-                    className="flex w-full items-center justify-center gap-2 bg-cyan-500 py-2.5 text-[11px] font-bold tracking-wide text-slate-950 hover:bg-cyan-400 disabled:cursor-wait disabled:opacity-60"
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 py-3.5 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60"
                   >
                     {busy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ArrowUpFromLine className="h-3.5 w-3.5" />}
                     START WITHDRAWAL
@@ -692,19 +703,9 @@ export default function AnchorPanel({
 
               {withdrawal && (
                 <>
-                  <div className="border border-slate-800 bg-slate-950 p-2.5 font-mono text-[10px]">
-                    <div className="flex items-start justify-between gap-3 py-1">
-                      <span className="text-slate-500">Treasury</span>
-                      <span className="break-all text-right text-slate-200">
-                        {withdrawal.accountId}
-                      </span>
-                    </div>
-                    <div className="flex items-start justify-between gap-3 py-1">
-                      <span className="text-slate-500">Memo ({withdrawal.memoType})</span>
-                      <span className="break-all text-right text-slate-200">
-                        {withdrawal.memo}
-                      </span>
-                    </div>
+                  <div className="rounded-xl border border-cyan-500/20 bg-slate-950/80 p-3 shadow-inner shadow-black/20">
+                    <CopyDetail label="Treasury" value={withdrawal.accountId} copied={copied === "Treasury"} onCopy={copyValue} />
+                    <CopyDetail label={`Memo (${withdrawal.memoType})`} value={withdrawal.memo} copied={copied === `Memo (${withdrawal.memoType})`} onCopy={copyValue} />
                     <p className="mt-2 border-t border-slate-800 pt-2 text-[9px] leading-relaxed text-amber-300">
                       The memo is the only link between your payment and this
                       withdrawal. Use the button below so it is attached for you.
@@ -731,6 +732,35 @@ export default function AnchorPanel({
   );
 }
 
+function CopyDetail({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  copied: boolean;
+  onCopy: (label: string, value: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 border-b border-slate-800/70 py-3 last:border-b-0">
+      <div className="min-w-0 flex-1">
+        <p className="text-[9px] font-medium uppercase tracking-widest text-slate-500">{label}</p>
+        <p className="mt-1 break-all font-mono text-xs font-medium text-white">{value}</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => onCopy(label, value)}
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/70 px-2.5 py-2 text-[10px] font-medium text-slate-300 transition hover:border-cyan-500/40 hover:text-cyan-300"
+      >
+        {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />}
+        {copied ? "Copied" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
 function StatusLadder({
   ladder,
   activeStep,
@@ -742,27 +772,37 @@ function StatusLadder({
 }) {
   if (!tracked) return null;
   const failed = tracked.status === "error" || tracked.status === "expired";
+  const completed = tracked.status === "completed";
   return (
-    <div className="border border-slate-800 bg-slate-950 p-2.5">
-      <div className="space-y-1.5">
+    <div className="rounded-xl border border-slate-800/80 bg-slate-950/50 p-3">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {ladder.map((step, index) => {
-          const done = !failed && index < activeStep;
-          const current = !failed && index === activeStep;
+          const done = !failed && (index < activeStep || (completed && index === activeStep));
+          const current = !failed && !completed && index === activeStep;
           return (
-            <div key={step.status} className="flex items-center gap-2">
+            <div
+              key={step.status}
+              className={`flex min-w-0 items-center gap-2 rounded-full border px-2.5 py-2 ${
+                done
+                  ? "border-emerald-500/30 bg-emerald-500/10"
+                  : current
+                    ? "border-cyan-500/40 bg-cyan-500/10"
+                    : "border-slate-800 bg-slate-900/40"
+              }`}
+            >
               <span
-                className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border text-[8px] ${
+                className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[8px] ${
                   done
-                    ? "border-emerald-500 bg-emerald-500/10 text-emerald-400"
+                    ? "bg-emerald-400 text-slate-950"
                     : current
-                      ? "border-cyan-400 bg-cyan-500/10 text-cyan-300"
-                      : "border-slate-800 text-slate-600"
+                      ? "border border-cyan-400 text-cyan-300"
+                      : "border border-slate-700 text-slate-600"
                 }`}
               >
                 {done ? <Check className="h-2.5 w-2.5" /> : current ? <LoaderCircle className="h-2.5 w-2.5 animate-spin" /> : index + 1}
               </span>
               <span
-                className={`font-mono text-[10px] ${
+                className={`truncate text-[9px] font-medium ${
                   done || current ? "text-slate-300" : "text-slate-600"
                 }`}
               >
@@ -772,7 +812,7 @@ function StatusLadder({
           );
         })}
       </div>
-      <div className="mt-2 border-t border-slate-800 pt-2 font-mono text-[9px] text-slate-500">
+      <div className="mt-3 border-t border-slate-800/80 pt-3 text-[10px] text-slate-500">
         <div className="flex justify-between">
           <span>Anchor status</span>
           <span className={failed ? "text-rose-300" : "text-slate-300"}>{tracked.status}</span>
@@ -796,10 +836,10 @@ function StatusLadder({
             href={`https://stellar.expert/explorer/testnet/tx/${encodeURIComponent(tracked.stellarTransactionId)}`}
             target="_blank"
             rel="noreferrer"
-            className="mt-1 inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300"
+            className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 font-semibold text-emerald-300 transition hover:bg-emerald-500/15"
           >
-            VIEW STELLAR PAYMENT
-            <ExternalLink className="h-2.5 w-2.5" />
+            Open in explorer
+            <ExternalLink className="h-3 w-3" />
           </a>
         )}
       </div>
