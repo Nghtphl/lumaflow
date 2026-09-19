@@ -1,25 +1,38 @@
 import {
-  rpc,
-  Contract,
-  TransactionBuilder,
   Account,
+  Address,
+  BASE_FEE,
+  Contract,
+  Keypair,
+  Networks,
+  Transaction,
+  TransactionBuilder,
+  rpc,
   scValToNative,
   xdr,
-  Networks,
 } from "@stellar/stellar-sdk";
 import * as dotenv from "dotenv";
 
 dotenv.config();
 
-const RPC_URL = process.env.RPC_URL || "https://soroban-testnet.stellar.org";
-const NETWORK_PASSPHRASE = process.env.NETWORK_PASSPHRASE || Networks.TESTNET;
-const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || "";
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 4000;
+const requiredEnv = (name: string): string => {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`Missing environment variable: ${name}`);
+  return value;
+};
 
-// RPC simülasyonları için salt-okunur dummy adres
-const DUMMY_CALLER = "GBICM7WA6FIVCFRCPM3ZIGNF5CZC5VRCU4IV4DJPQLWIALVQ6IN6OI6A";
+const RPC_URL = requiredEnv("RPC_URL");
+const VAULT_CONTRACT_ID = requiredEnv("VAULT_CONTRACT_ID");
+const KEEPER_SECRET_KEY = process.env.KEEPER_SECRET_KEY?.trim();
+const NETWORK_PASSPHRASE =
+  process.env.NETWORK_PASSPHRASE?.trim() || Networks.TESTNET;
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 4_000);
+const CONFIRMATION_TIMEOUT_MS = 60_000;
+const CONFIRMATION_POLL_MS = 2_000;
+const READ_ONLY_SOURCE =
+  "GBICM7WA6FIVCFRCPM3ZIGNF5CZC5VRCU4IV4DJPQLWIALVQ6IN6OI6A";
 
-interface VaultOrder {
+type VaultOrder = {
   id: number;
   owner: string;
   token_in: string;
@@ -27,84 +40,168 @@ interface VaultOrder {
   amount_in: bigint;
   min_amount_out: bigint;
   fee_bps: number;
-  status: number; // 0: Active, 1: Executed, 2: Cancelled
-}
+  status: number;
+};
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+const errorText = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
 
 class TriggerVaultKeeper {
-  private server: rpc.Server;
-  private vaultContract: Contract;
+  private readonly server = new rpc.Server(RPC_URL);
+  private readonly vault = new Contract(VAULT_CONTRACT_ID);
+  private readonly keypair = KEEPER_SECRET_KEY
+    ? Keypair.fromSecret(KEEPER_SECRET_KEY)
+    : null;
+  private running = true;
 
-  constructor() {
-    this.server = new rpc.Server(RPC_URL);
-    this.vaultContract = new Contract(VAULT_CONTRACT_ID);
+  async start(): Promise<void> {
+    await this.verifyConnection();
+    console.log(`TriggerVault keeper started: ${VAULT_CONTRACT_ID}`);
+    console.log(
+      this.keypair
+        ? `Execution mode: ${this.keypair.publicKey()}`
+        : "Read-only mode: KEEPER_SECRET_KEY is not configured",
+    );
+
+    while (this.running) {
+      try {
+        await this.scanOrders();
+      } catch (error) {
+        console.error(`Scan failed: ${errorText(error)}`);
+      }
+      if (this.running) await delay(POLL_INTERVAL_MS);
+    }
   }
 
-  private async callContract(method: string, ...args: xdr.ScVal[]): Promise<any> {
-    const dummyAccount = new Account(DUMMY_CALLER, "0");
-    const tx = new TransactionBuilder(dummyAccount, {
-      fee: "100",
+  stop(): void {
+    this.running = false;
+  }
+
+  private async verifyConnection(): Promise<void> {
+    const [health, network] = await Promise.all([
+      this.server.getHealth(),
+      this.server.getNetwork(),
+    ]);
+    if (health.status !== "healthy") throw new Error("RPC is not healthy");
+    if (network.passphrase !== NETWORK_PASSPHRASE) {
+      throw new Error("NETWORK_PASSPHRASE does not match RPC network");
+    }
+    if (this.keypair) await this.server.getAccount(this.keypair.publicKey());
+  }
+
+  private async readContract<T>(
+    method: string,
+    ...args: xdr.ScVal[]
+  ): Promise<T> {
+    const source = new Account(READ_ONLY_SOURCE, "0");
+    const transaction = new TransactionBuilder(source, {
+      fee: BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
     })
-      .addOperation(this.vaultContract.call(method, ...args))
+      .addOperation(this.vault.call(method, ...args))
       .setTimeout(30)
       .build();
 
-    const sim = await this.server.simulateTransaction(tx);
-    if (rpc.Api.isSimulationSuccess(sim) && sim.result) {
-      return scValToNative(sim.result.retval);
+    const simulation = await this.server.simulateTransaction(transaction);
+    if (!rpc.Api.isSimulationSuccess(simulation) || !simulation.result) {
+      throw new Error(`${method} simulation failed`);
     }
-    return null;
+    return scValToNative(simulation.result.retval) as T;
   }
 
-  public async start() {
-    console.log("==================================================");
-    console.log("🚀 TriggerVault Otonom Keeper Başlatıldı");
-    console.log(`📡 Ağ: Stellar Testnet (${RPC_URL})`);
-    console.log(`🏦 Kasa Kontratı: ${VAULT_CONTRACT_ID}`);
-    console.log(`⏱️  Tarama Aralığı: ${POLL_INTERVAL_MS}ms`);
-    console.log("==================================================\n");
+  private async scanOrders(): Promise<void> {
+    const orderCount = await this.readContract<number>("get_order_count");
 
-    while (true) {
+    for (let orderId = 1; orderId <= orderCount && this.running; orderId += 1) {
       try {
-        await this.scanVault();
-      } catch (err: any) {
-        console.error("❌ Tarama hatası:", err.message || err);
+        const order = await this.readContract<VaultOrder>(
+          "get_order",
+          xdr.ScVal.scvU32(orderId),
+        );
+        if (order.status !== 0) continue;
+
+        console.log(
+          `Active order #${order.id} | owner=${order.owner} | ` +
+            `amount=${order.amount_in} | minOut=${order.min_amount_out} | ` +
+            `fee=${order.fee_bps}bps`,
+        );
+        if (this.keypair) await this.executeOrder(order);
+      } catch (error) {
+        console.error(`Order #${orderId} read failed: ${errorText(error)}`);
       }
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
     }
   }
 
-  private async scanVault() {
-    const totalOrdersRaw = await this.callContract("get_order_count");
-    const totalOrders = Number(totalOrdersRaw || 0);
+  private async executeOrder(order: VaultOrder): Promise<void> {
+    const keypair = this.keypair;
+    if (!keypair) return;
 
-    const timestamp = new Date().toLocaleTimeString();
-    console.log(`[${timestamp}] 🔍 Kasa taranıyor... Toplam Emir Sayısı: ${totalOrders}`);
+    try {
+      const publicKey = keypair.publicKey();
+      const source = await this.server.getAccount(publicKey);
+      const transaction = new TransactionBuilder(source, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(
+          this.vault.call(
+            "execute_order",
+            xdr.ScVal.scvU32(order.id),
+            Address.fromString(publicKey).toScVal(),
+          ),
+        )
+        .setTimeout(60)
+        .build();
 
-    if (totalOrders === 0) return;
+      const simulation = await this.server.simulateTransaction(transaction);
+      if (!rpc.Api.isSimulationSuccess(simulation)) return;
 
-    for (let id = 1; id <= totalOrders; id++) {
-      const orderRaw: VaultOrder = await this.callContract("get_order", xdr.ScVal.scvU32(id));
-      if (!orderRaw) continue;
+      const prepared = rpc.assembleTransaction(transaction, simulation).build();
+      prepared.sign(keypair);
+      const submission = await this.send(prepared);
+      const result = await this.waitForConfirmation(submission.hash);
 
-      const statusMap = ["AKTİF", "GERÇEKLEŞTİ", "İPTAL EDİLDİ"];
-      const statusText = statusMap[orderRaw.status] || "BİLİNMİYOR";
-
-      if (orderRaw.status === 0) {
-        const xlmAmount = Number(orderRaw.amount_in) / 10_000_000;
-        const minOutXlm = Number(orderRaw.min_amount_out) / 10_000_000;
-        const bountyPercent = orderRaw.fee_bps / 100;
-
-        console.log(`  🎯 [Emir #${id}] ${statusText}`);
-        console.log(`     ├─ Sahip: ${orderRaw.owner}`);
-        console.log(`     ├─ Kilitli Teminat: ${xlmAmount} XLM`);
-        console.log(`     ├─ Hedef Çıkış: ≥ ${minOutXlm} Token`);
-        console.log(`     ├─ Keeper Primi: %${bountyPercent}`);
-        console.log(`     └─ Durum: Fiyat ve slippage şartı bekleniyor...`);
+      if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+        console.log(`Order #${order.id} executed: ${submission.hash}`);
+      } else {
+        console.error(`Order #${order.id} failed: ${submission.hash}`);
       }
+    } catch (error) {
+      console.log(`Order #${order.id} not executable: ${errorText(error)}`);
     }
+  }
+
+  private async send(
+    transaction: Transaction,
+  ): Promise<rpc.Api.SendTransactionResponse> {
+    const response = await this.server.sendTransaction(transaction);
+    if (response.status !== "PENDING" && response.status !== "DUPLICATE") {
+      const detail = response.errorResult?.toXDR("base64") || response.status;
+      throw new Error(`Transaction rejected: ${detail}`);
+    }
+    return response;
+  }
+
+  private async waitForConfirmation(
+    hash: string,
+  ): Promise<rpc.Api.GetTransactionResponse> {
+    const deadline = Date.now() + CONFIRMATION_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const result = await this.server.getTransaction(hash);
+      if (result.status !== rpc.Api.GetTransactionStatus.NOT_FOUND) return result;
+      await delay(CONFIRMATION_POLL_MS);
+    }
+    throw new Error(`Confirmation timed out: ${hash}`);
   }
 }
 
 const keeper = new TriggerVaultKeeper();
-keeper.start();
+process.once("SIGINT", () => keeper.stop());
+process.once("SIGTERM", () => keeper.stop());
+keeper.start().catch((error) => {
+  console.error(`Keeper stopped: ${errorText(error)}`);
+  process.exitCode = 1;
+});

@@ -27,7 +27,18 @@ pub enum Error {
     RouterNotSet = 5,
     SlippageExceeded = 6,
     NotAuthorized = 7,
+    IdenticalTokens = 8,
+    InvalidBalanceDelta = 9,
+    AlreadyInitialized = 10,
 }
+
+// Soroban ledgers close approximately every five seconds. Active protocol state is
+// renewed when it has less than ~30 days left, back to ~120 days. Persistent data
+// can still be restored from archival, but proactively renewing it keeps normal
+// order execution and cancellation on the live ledger.
+pub(crate) const PERSISTENT_TTL_THRESHOLD: u32 = 518_400;
+pub(crate) const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
+pub(crate) const MAX_FEE_BPS: u32 = 1_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[contracttype]
@@ -64,13 +75,32 @@ pub struct TriggerVault;
 
 #[contractimpl]
 impl TriggerVault {
-    pub fn init(env: Env, admin: Address, router: Address) {
-        if env.storage().persistent().has(&DataKey::Admin) {
-            panic!("already initialized");
-        }
+    fn bump_instance_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+    }
+
+    fn bump_persistent_key(env: &Env, key: &DataKey) {
+        env.storage().persistent().extend_ttl(
+            key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
+    pub fn init(env: Env, admin: Address, router: Address) -> Result<(), Error> {
         admin.require_auth();
+
+        if env.storage().persistent().has(&DataKey::Admin) {
+            return Err(Error::AlreadyInitialized);
+        }
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Router, &router);
+        Self::bump_persistent_key(&env, &DataKey::Admin);
+        Self::bump_persistent_key(&env, &DataKey::Router);
+        Self::bump_instance_ttl(&env);
+        Ok(())
     }
 
     pub fn set_router(env: Env, router: Address) -> Result<(), Error> {
@@ -81,14 +111,21 @@ impl TriggerVault {
             .ok_or(Error::NotAuthorized)?;
         admin.require_auth();
         env.storage().persistent().set(&DataKey::Router, &router);
+        Self::bump_persistent_key(&env, &DataKey::Admin);
+        Self::bump_persistent_key(&env, &DataKey::Router);
+        Self::bump_instance_ttl(&env);
         Ok(())
     }
 
     pub fn get_router(env: Env) -> Result<Address, Error> {
-        env.storage()
+        let router = env
+            .storage()
             .persistent()
             .get(&DataKey::Router)
-            .ok_or(Error::RouterNotSet)
+            .ok_or(Error::RouterNotSet)?;
+        Self::bump_persistent_key(&env, &DataKey::Router);
+        Self::bump_instance_ttl(&env);
+        Ok(router)
     }
 
     pub fn create_order(
@@ -105,7 +142,10 @@ impl TriggerVault {
         if amount_in <= 0 || min_amount_out <= 0 {
             return Err(Error::InvalidAmount);
         }
-        if fee_bps > 10_000 {
+        if token_in == token_out {
+            return Err(Error::IdenticalTokens);
+        }
+        if fee_bps > MAX_FEE_BPS {
             return Err(Error::InvalidFee);
         }
 
@@ -132,6 +172,9 @@ impl TriggerVault {
 
         env.storage().persistent().set(&DataKey::Order(new_id), &order);
         env.storage().persistent().set(&DataKey::NextOrderId, &new_id);
+        Self::bump_persistent_key(&env, &DataKey::Order(new_id));
+        Self::bump_persistent_key(&env, &DataKey::NextOrderId);
+        Self::bump_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("order"), symbol_short!("create")),
@@ -154,11 +197,14 @@ impl TriggerVault {
             return Err(Error::OrderNotActive);
         }
 
+        Self::bump_persistent_key(&env, &DataKey::Order(order_id));
+
         let token_client = token::Client::new(&env, &order.token_in);
         token_client.transfer(&env.current_contract_address(), &order.owner, &order.amount_in);
 
         order.status = OrderStatus::Cancelled;
         env.storage().persistent().set(&DataKey::Order(order_id), &order);
+        Self::bump_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("order"), symbol_short!("cancel")),
@@ -181,7 +227,15 @@ impl TriggerVault {
             return Err(Error::OrderNotActive);
         }
 
+        Self::bump_persistent_key(&env, &DataKey::Order(order_id));
+
         let router = Self::get_router(env.clone())?;
+
+        // `min_amount_out` is the limit-order boundary: execution is valid only
+        // when this transaction delivers at least that amount to the vault.
+        // Measure the actual balance delta instead of trusting router return data.
+        let token_out_client = token::Client::new(&env, &order.token_out);
+        let balance_before = token_out_client.balance(&env.current_contract_address());
 
         // 1. Kilitli token_in'i Router adresine transfer et
         let token_in_client = token::Client::new(&env, &order.token_in);
@@ -194,7 +248,7 @@ impl TriggerVault {
 
         let deadline = env.ledger().timestamp() + 300;
         let router_client = RouterClient::new(&env, &router);
-        let amounts = router_client.swap_exact_tokens_for_tokens(
+        router_client.swap_exact_tokens_for_tokens(
             &order.amount_in,
             &order.min_amount_out,
             &path,
@@ -202,11 +256,10 @@ impl TriggerVault {
             &deadline,
         );
 
-        let amount_out = if amounts.is_empty() {
-            0
-        } else {
-            amounts.get(amounts.len() - 1).unwrap_or(0)
-        };
+        let balance_after = token_out_client.balance(&env.current_contract_address());
+        let amount_out = balance_after
+            .checked_sub(balance_before)
+            .ok_or(Error::InvalidBalanceDelta)?;
 
         if amount_out < order.min_amount_out {
             return Err(Error::SlippageExceeded);
@@ -216,7 +269,6 @@ impl TriggerVault {
         let fee_amount = (amount_out * (order.fee_bps as i128)) / 10_000;
         let user_amount = amount_out - fee_amount;
 
-        let token_out_client = token::Client::new(&env, &order.token_out);
         if fee_amount > 0 {
             token_out_client.transfer(&env.current_contract_address(), &executor, &fee_amount);
         }
@@ -225,6 +277,7 @@ impl TriggerVault {
         // 4. Durumu güncelle
         order.status = OrderStatus::Executed;
         env.storage().persistent().set(&DataKey::Order(order_id), &order);
+        Self::bump_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("order"), symbol_short!("execute")),
@@ -235,17 +288,27 @@ impl TriggerVault {
     }
 
     pub fn get_order(env: Env, order_id: u32) -> Result<Order, Error> {
-        env.storage()
+        let order = env
+            .storage()
             .persistent()
             .get(&DataKey::Order(order_id))
-            .ok_or(Error::OrderNotFound)
+            .ok_or(Error::OrderNotFound)?;
+        Self::bump_persistent_key(&env, &DataKey::Order(order_id));
+        Self::bump_instance_ttl(&env);
+        Ok(order)
     }
 
     pub fn get_order_count(env: Env) -> u32 {
-        env.storage()
+        let count = env
+            .storage()
             .persistent()
             .get(&DataKey::NextOrderId)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        if count > 0 {
+            Self::bump_persistent_key(&env, &DataKey::NextOrderId);
+        }
+        Self::bump_instance_ttl(&env);
+        count
     }
 }
 
