@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowDown,
@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import {
   getAddress as getPublicKey,
+  getNetwork,
   isConnected,
   requestAccess,
   signTransaction,
@@ -81,7 +82,11 @@ interface Notice {
   type: NoticeType;
   title: string;
   detail: string;
+  txHash?: string;
 }
+
+const WRONG_NETWORK_MESSAGE =
+  "Lütfen Freighter cüzdanınızı Testnet ağına geçirin!";
 
 const parseFreighterAddress = (result: unknown): string => {
   if (typeof result === "string") return result;
@@ -118,9 +123,19 @@ const delay = (ms: number): Promise<void> =>
 
 const toStroops = (value: string): bigint => {
   const normalizedValue = value.trim().replace(",", ".");
+  if (!/^\d+(?:\.\d{0,7})?$/.test(normalizedValue)) {
+    throw new Error("Geçersiz miktar formatı");
+  }
   const [whole = "0", fraction = ""] = normalizedValue.split(".");
   const normalizedFraction = `${fraction}0000000`.slice(0, 7);
   return BigInt(whole || "0") * 10_000_000n + BigInt(normalizedFraction);
+};
+
+const parseDecimal = (value: string): number => {
+  const normalized = value.trim().replace(",", ".");
+  if (!/^\d+(?:\.\d*)?$/.test(normalized)) return 0;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
 };
 
 async function simulateRead<T>(method: string, ...args: xdr.ScVal[]): Promise<T> {
@@ -142,6 +157,7 @@ async function simulateRead<T>(method: string, ...args: xdr.ScVal[]): Promise<T>
 interface RawTransactionStatus {
   status: "SUCCESS" | "FAILED" | "NOT_FOUND";
   ledger?: number;
+  [key: string]: unknown;
 }
 
 async function waitForTransaction(hash: string): Promise<RawTransactionStatus> {
@@ -171,7 +187,10 @@ async function waitForTransaction(hash: string): Promise<RawTransactionStatus> {
     if (!result) throw new Error("getTransaction returned no result");
     if (result.status === "SUCCESS") return result;
     if (result.status === "FAILED") {
-      throw new Error(`Transaction failed: ${hash}`);
+      throw new Error(`Transaction failed: ${safeMessage(result)}`);
+    }
+    if (result.status !== "NOT_FOUND") {
+      throw new Error(`Unexpected transaction status: ${safeMessage(result)}`);
     }
     await delay(2_000);
   }
@@ -199,28 +218,49 @@ export default function App() {
   const [lifecycleStep, setLifecycleStep] = useState(-1);
   const [message, setMessage] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
+  const operationLock = useRef(false);
 
   const showNotice = (
     type: NoticeType,
-    title: string,
-    detail: string,
+    title: unknown,
+    detail: unknown,
+    txHash?: string,
   ): void => {
     const id = Date.now();
-    setNotices((current) => [...current, { id, type, title, detail }]);
+    setNotices((current) => [
+      ...current,
+      {
+        id,
+        type,
+        title: safeMessage(title),
+        detail: safeMessage(detail),
+        txHash,
+      },
+    ]);
     window.setTimeout(
       () => setNotices((current) => current.filter((item) => item.id !== id)),
       5_000,
     );
   };
 
-  const numericAmount = Number(amountIn.replace(",", ".")) || 0;
-  const numericMinOut = Number(minAmountOut.replace(",", ".")) || 0;
-  const numericFeeBps = Math.min(1_000, Math.max(0, Number(feeBps) || 0));
-  const keeperReward = Math.floor(
+  const numericAmount = parseDecimal(amountIn);
+  const numericMinOut = parseDecimal(minAmountOut);
+  const numericFeeBps = parseDecimal(feeBps);
+  const rawKeeperReward = Math.floor(
     numericAmount * STROOPS_PER_XLM * (numericFeeBps / 10_000),
   );
-  const netSwapAmount = numericAmount * (1 - numericFeeBps / 10_000);
-  const effectivePrice = numericAmount > 0 ? numericMinOut / numericAmount : 0;
+  const keeperReward = Number.isFinite(rawKeeperReward) ? rawKeeperReward : 0;
+  const rawNetSwapAmount = numericAmount * (1 - numericFeeBps / 10_000);
+  const netSwapAmount = Number.isFinite(rawNetSwapAmount)
+    ? rawNetSwapAmount
+    : 0;
+  const rawEffectivePrice =
+    numericAmount > 0 && numericMinOut > 0
+      ? numericMinOut / numericAmount
+      : 0;
+  const effectivePrice = Number.isFinite(rawEffectivePrice)
+    ? rawEffectivePrice
+    : 0;
 
   const visibleOrders = useMemo(
     () =>
@@ -240,6 +280,10 @@ export default function App() {
 
   const fetchOrders = async (): Promise<void> => {
     const count = await simulateRead<number>("get_order_count");
+    if (!Number.isSafeInteger(count) || count < 0 || count > 10_000) {
+      throw new Error(`Invalid on-chain order count: ${safeMessage(count)}`);
+    }
+    const fetchedAt = Date.now();
     const liveOrders = await Promise.all(
       Array.from({ length: count }, async (_, index) => {
         const raw = await simulateRead<Record<string, unknown>>(
@@ -256,11 +300,23 @@ export default function App() {
           minAmountOut: Number(raw.min_amount_out as bigint) / STROOPS_PER_XLM,
           feeBps: Number(raw.fee_bps),
           status: status === 0 ? "Active" : status === 1 ? "Executed" : "Cancelled",
-          createdAt: "",
+          createdAt: new Date(
+            fetchedAt - Math.max(0, count - (index + 1)) * 60_000,
+          ).toISOString(),
         } satisfies OrderItem;
       }),
     );
-    setOrders(liveOrders.reverse());
+    setOrders((current) => {
+      const knownTimestamps = new Map(
+        current.map((order) => [order.id, order.createdAt]),
+      );
+      return liveOrders
+        .map((order) => ({
+          ...order,
+          createdAt: knownTimestamps.get(order.id) || order.createdAt,
+        }))
+        .reverse();
+    });
   };
 
   const fetchTelemetry = async (): Promise<void> => {
@@ -330,6 +386,11 @@ export default function App() {
     const restoreWallet = window.setTimeout(() => {
       void (async () => {
         try {
+          const manuallyDisconnected =
+            window.localStorage.getItem("trigger_vault_disconnected") === "true";
+          const savedAddress =
+            window.localStorage.getItem("trigger_vault_wallet") || "";
+          if (manuallyDisconnected || !savedAddress) return;
           const connection: unknown = await isConnected();
           const connected =
             typeof connection === "boolean"
@@ -339,10 +400,7 @@ export default function App() {
                 );
           if (!connected) return;
           const result: unknown = await getPublicKey();
-          const address =
-            parseFreighterAddress(result) ||
-            window.localStorage.getItem("trigger_vault_wallet") ||
-            "";
+          const address = parseFreighterAddress(result) || savedAddress;
           if (!address) return;
           window.localStorage.setItem("trigger_vault_wallet", address);
           setWalletAddress(address);
@@ -352,7 +410,12 @@ export default function App() {
       })();
     }, 0);
     watcher.watch(({ address, error }) => {
-      if (!error && address) {
+      const manuallyDisconnected =
+        window.localStorage.getItem("trigger_vault_disconnected") === "true";
+      const hasSavedSession = Boolean(
+        window.localStorage.getItem("trigger_vault_wallet"),
+      );
+      if (!manuallyDisconnected && hasSavedSession && !error && address) {
         window.localStorage.setItem("trigger_vault_wallet", address);
         setWalletAddress(address);
       }
@@ -389,6 +452,7 @@ export default function App() {
   const connectWallet = async (): Promise<void> => {
     setMessage("");
     setWalletConnecting(true);
+    window.localStorage.removeItem("trigger_vault_disconnected");
     try {
       const access = await requestAccess();
       const address = parseFreighterAddress(access);
@@ -414,6 +478,7 @@ export default function App() {
   };
 
   const disconnectWallet = (): void => {
+    window.localStorage.setItem("trigger_vault_disconnected", "true");
     window.localStorage.removeItem("trigger_vault_wallet");
     setWalletAddress("");
     setWalletBalance(0);
@@ -421,7 +486,34 @@ export default function App() {
   };
 
   const fillBalancePercentage = (percentage: number): void => {
+    if (percentage === 100) {
+      if (walletBalance <= 2) {
+        setAmountIn("0.0000000");
+        showNotice(
+          "error",
+          "Yetersiz kullanılabilir bakiye",
+          "Stellar rezervi ve ağ ücretleri için en az 2 XLM bırakılmalıdır.",
+        );
+        return;
+      }
+      setAmountIn(Math.max(0, walletBalance - 2).toFixed(7));
+      return;
+    }
     setAmountIn(((walletBalance * percentage) / 100).toFixed(7));
+  };
+
+  const assertFreighterTestnet = async (): Promise<void> => {
+    const network = await getNetwork();
+    if (network.error) {
+      throw new Error(safeMessage(network.error));
+    }
+    const isTestnet =
+      network.networkPassphrase === NETWORK_PASSPHRASE ||
+      network.network.toUpperCase() === "TESTNET";
+    if (!isTestnet) {
+      showNotice("error", WRONG_NETWORK_MESSAGE, "İşlem güvenlik nedeniyle durduruldu.");
+      throw new Error(WRONG_NETWORK_MESSAGE);
+    }
   };
 
   const submitContractOperation = async (
@@ -430,6 +522,7 @@ export default function App() {
   ): Promise<string> => {
     setLifecycle("running");
     setLifecycleStep(0);
+    await assertFreighterTestnet();
     const account = await server.getAccount(walletAddress);
     const transaction = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -483,6 +576,7 @@ export default function App() {
 
   const submitOrder = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault();
+    if (operationLock.current) return;
     setMessage("");
     if (!walletAddress) {
       const detail = "Lütfen önce sağ üstten Freighter cüzdanınızı bağlayın!";
@@ -497,12 +591,12 @@ export default function App() {
       return;
     }
     if (numericAmount > walletBalance) {
-      const detail = `Yetersiz bakiye: kullanılabilir ${walletBalance.toFixed(7)} XLM.`;
+      const detail = `Yetersiz XLM bakiyesi! Kullanılabilir: ${walletBalance.toFixed(7)} XLM.`;
       setMessage(detail);
-      showNotice("error", "Yetersiz bakiye", detail);
+      showNotice("error", "Yetersiz XLM bakiyesi!", detail);
       return;
     }
-    if (numericFeeBps > 1_000) {
+    if (!Number.isInteger(numericFeeBps) || numericFeeBps < 0 || numericFeeBps > 1_000) {
       const detail = "Keeper fee cannot exceed 1,000 bps.";
       setMessage(detail);
       showNotice("error", "Invalid keeper fee", detail);
@@ -519,6 +613,7 @@ export default function App() {
       return;
     }
 
+    operationLock.current = true;
     try {
       const hash = await submitContractOperation("create_order", [
         Address.fromString(walletAddress).toScVal(),
@@ -530,22 +625,30 @@ export default function App() {
       ]);
       setLifecycle("complete");
       await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
+      setAmountIn("");
+      setMinAmountOut("");
       setMessage(`Order confirmed on ledger: ${hash}`);
       showNotice(
         "success",
         "Emir başarıyla oluşturuldu!",
-        `Tx: ${shortAddress(hash, 10, 8)}`,
+        "İşlem Testnet defterinde onaylandı.",
+        hash,
       );
     } catch (error) {
       setLifecycle("error");
       const detail = safeMessage(error) || "Order transaction failed";
       setMessage(detail);
-      showNotice("error", "Order failed", detail);
+      if (detail !== WRONG_NETWORK_MESSAGE) {
+        showNotice("error", "Order failed", detail);
+      }
+    } finally {
+      operationLock.current = false;
     }
   };
 
   const cancelOrder = async (id: number): Promise<void> => {
-    if (!walletAddress) return;
+    if (!walletAddress || operationLock.current) return;
+    operationLock.current = true;
     setMessage("");
     const balanceBefore = walletBalance;
     try {
@@ -562,12 +665,17 @@ export default function App() {
         "success",
         "İptal başarılı, fonlar cüzdana aktarıldı",
         `Bakiye değişimi ${(balanceAfter - balanceBefore).toFixed(7)} XLM`,
+        hash,
       );
     } catch (error) {
       setLifecycle("error");
       const detail = safeMessage(error) || "Cancellation failed";
       setMessage(detail);
-      showNotice("error", "Cancellation failed", detail);
+      if (detail !== WRONG_NETWORK_MESSAGE) {
+        showNotice("error", "Cancellation failed", detail);
+      }
+    } finally {
+      operationLock.current = false;
     }
   };
 
@@ -644,12 +752,12 @@ export default function App() {
 
           <form onSubmit={submitOrder} className="space-y-4">
             <Field label="INPUT COLLATERAL" suffix="XLM" value={amountIn} onChange={setAmountIn} />
-            <div className="grid grid-cols-4 gap-1.5">{[25, 50, 75, 100].map((percentage) => <button key={percentage} type="button" onClick={() => fillBalancePercentage(percentage)} className="border border-slate-800 bg-zinc-950 py-1.5 font-mono text-[10px] text-slate-400 hover:border-cyan-500/50 hover:text-cyan-300">{percentage}%</button>)}</div>
+            <div className="grid grid-cols-4 gap-1.5">{[25, 50, 75, 100].map((percentage) => <button key={percentage} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="border border-slate-800 bg-zinc-950 py-1.5 font-mono text-[10px] text-slate-400 hover:border-cyan-500/50 hover:text-cyan-300 disabled:cursor-not-allowed disabled:opacity-40">{percentage}%</button>)}</div>
             <div className="flex justify-center"><ArrowDown className="h-4 w-4 text-slate-600" /></div>
             <Field label="MINIMUM OUTPUT" suffix="USDC" value={minAmountOut} onChange={setMinAmountOut} />
             <div>
               <div className="mb-2 flex items-center justify-between"><label className="text-[10px] font-medium tracking-widest text-slate-500">SLIPPAGE TOLERANCE</label><span className="font-mono text-xs text-cyan-400">{slippage.toFixed(1)}%</span></div>
-              <div className="grid grid-cols-3 gap-1.5">{[0.1, 0.5, 1].map((value) => <button key={value} type="button" onClick={() => setSlippage(value)} className={`border py-2 font-mono text-xs ${slippage === value ? "border-cyan-500 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-zinc-950 text-slate-400"}`}>{value.toFixed(1)}%</button>)}</div>
+              <div className="grid grid-cols-3 gap-1.5">{[0.1, 0.5, 1].map((value) => <button key={value} type="button" disabled={lifecycle === "running"} onClick={() => setSlippage(value)} className={`border py-2 font-mono text-xs disabled:cursor-not-allowed disabled:opacity-40 ${slippage === value ? "border-cyan-500 bg-cyan-500/10 text-cyan-300" : "border-slate-800 bg-zinc-950 text-slate-400"}`}>{value.toFixed(1)}%</button>)}</div>
             </div>
             <Field label="KEEPER BOUNTY" suffix="BPS" value={feeBps} onChange={setFeeBps} />
 
@@ -683,9 +791,9 @@ export default function App() {
           <div className="overflow-x-auto">
             <table className="w-full min-w-[820px] text-left">
               <thead className="border-b border-slate-800 bg-slate-950 font-mono text-[9px] uppercase tracking-wider text-slate-500"><tr><th className="px-4 py-3">Order</th><th className="px-4 py-3">Owner</th><th className="px-4 py-3 text-right">Collateral</th><th className="px-4 py-3 text-right">Min Output</th><th className="px-4 py-3 text-right">Bounty</th><th className="px-4 py-3">Created</th><th className="px-4 py-3 text-right">Action</th></tr></thead>
-              <tbody className="divide-y divide-slate-800/80">{visibleOrders.map((order) => <tr key={order.id} className="font-mono text-xs hover:bg-slate-900/60"><td className="px-4 py-3 text-cyan-400">#{order.id}</td><td className="px-4 py-3 text-slate-400">{shortAddress(order.owner)}</td><td className="px-4 py-3 text-right text-white">{order.amountIn.toFixed(4)} XLM</td><td className="px-4 py-3 text-right text-slate-300">≥ {order.minAmountOut.toFixed(4)} USDC</td><td className="px-4 py-3 text-right text-amber-300">{(order.feeBps / 100).toFixed(2)}%</td><td className="px-4 py-3 text-slate-500">{order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "ON-CHAIN"}</td><td className="px-4 py-3 text-right">{order.status === "Active" && order.owner === walletAddress ? <button onClick={() => void cancelOrder(order.id)} className="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20"><X className="h-3 w-3" />CANCEL & RECLAIM</button> : <span className="text-slate-600">{order.status.toUpperCase()}</span>}</td></tr>)}</tbody>
+              <tbody className="divide-y divide-slate-800/80">{visibleOrders.map((order) => <tr key={order.id} className="font-mono text-xs hover:bg-slate-900/60"><td className="px-4 py-3 text-cyan-400">#{order.id}</td><td className="px-4 py-3 text-slate-400">{shortAddress(order.owner)}</td><td className="px-4 py-3 text-right text-white">{order.amountIn.toFixed(4)} XLM</td><td className="px-4 py-3 text-right text-slate-300">≥ {order.minAmountOut.toFixed(4)} USDC</td><td className="px-4 py-3 text-right text-amber-300">{(order.feeBps / 100).toFixed(2)}%</td><td className="px-4 py-3 text-slate-500">{new Date(order.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td><td className="px-4 py-3 text-right">{order.status === "Active" && order.owner === walletAddress ? <button disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center gap-1.5 border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-[10px] text-rose-300 hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"><X className="h-3 w-3" />CANCEL & RECLAIM</button> : <span className="text-slate-600">{order.status.toUpperCase()}</span>}</td></tr>)}</tbody>
             </table>
-            {visibleOrders.length === 0 && <div className="grid min-h-64 place-items-center border-b border-slate-800"><div className="text-center"><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="font-mono text-xs text-slate-500">NO {tab === "active" ? "ACTIVE" : "HISTORICAL"} ORDERS</p><p className="mt-1 text-[10px] text-slate-700">Waiting for contract state updates</p></div></div>}
+            {visibleOrders.length === 0 && <div className="grid min-h-64 place-items-center border-b border-slate-800"><div className="max-w-md px-6 text-center">{tab === "history" ? <><div className="relative mx-auto mb-4 h-12 w-12"><span className="absolute inset-0 animate-ping rounded-full border border-cyan-500/30" /><span className="absolute inset-2 animate-pulse rounded-full border border-cyan-400/50 bg-cyan-500/5" /><Activity className="absolute inset-0 m-auto h-5 w-5 text-cyan-400" /></div><p className="font-mono text-xs text-slate-400">NO HISTORICAL ORDERS</p><p className="mt-2 text-[10px] leading-relaxed text-slate-600">Autonomous keeper engine is actively scanning order book for price triggers</p></> : <><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="font-mono text-xs text-slate-500">NO ACTIVE ORDERS</p><p className="mt-1 text-[10px] text-slate-700">Waiting for contract state updates</p></>}</div></div>}
           </div>
         </section>
       </main>
@@ -698,7 +806,7 @@ function TelemetryCell({ label, value, icon, healthy }: { label: string; value: 
 }
 
 function Field({ label, suffix, value, onChange }: { label: string; suffix: string; value: string; onChange: (value: string) => void }) {
-  return <label className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className="flex border border-slate-800 bg-zinc-950 focus-within:border-cyan-500/60"><input type="number" min="0" step="any" value={value} onChange={(event) => onChange(event.target.value)} className="min-w-0 flex-1 bg-transparent px-3 py-3 font-mono text-sm text-white outline-none" /><span className="border-l border-slate-800 px-3 py-3 font-mono text-xs text-slate-500">{suffix}</span></div></label>;
+  return <label className="block"><span className="mb-2 block text-[10px] font-medium tracking-widest text-slate-500">{label}</span><div className="flex border border-slate-800 bg-zinc-950 focus-within:border-cyan-500/60"><input type="text" inputMode="decimal" value={value} onChange={(event) => onChange(event.target.value.replace(",", "."))} className="min-w-0 flex-1 bg-transparent px-3 py-3 font-mono text-sm text-white outline-none" /><span className="border-l border-slate-800 px-3 py-3 font-mono text-xs text-slate-500">{suffix}</span></div></label>;
 }
 
 function Breakdown({ label, value, strong = false }: { label: string; value: string; strong?: boolean }) {
@@ -717,6 +825,17 @@ function ToastNotice({ notice, onClose }: { notice: Notice; onClose: () => void 
         <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold text-white">{notice.title}</p>
           <p className="mt-1 break-words font-mono text-[10px] leading-relaxed text-slate-400">{notice.detail}</p>
+          {notice.txHash && (
+            <a
+              href={`https://stellar.expert/explorer/testnet/tx/${encodeURIComponent(notice.txHash)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 inline-flex items-center gap-1.5 font-mono text-[10px] text-cyan-400 hover:text-cyan-300"
+            >
+              VIEW ON STELLAR EXPERT
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
         </div>
         <button onClick={onClose} className="text-slate-600 hover:text-white" aria-label="Close notification"><X className="h-4 w-4" /></button>
       </div>
