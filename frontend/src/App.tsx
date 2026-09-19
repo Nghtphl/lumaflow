@@ -915,9 +915,10 @@ function App() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#0B0F19] text-slate-100 selection:bg-cyan-500/30">
+    <div className="relative min-h-screen overflow-hidden bg-[#0B0F19] text-slate-100 antialiased selection:bg-cyan-500/30">
       <style>{`@keyframes toast-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }`}</style>
       <div className="pointer-events-none fixed inset-0">
+        <div className="absolute inset-x-0 top-0 h-[34rem] bg-[radial-gradient(circle_at_50%_0%,rgba(34,211,238,0.12),transparent_62%)]" />
         <div className="absolute -left-40 -top-40 h-[34rem] w-[34rem] rounded-full bg-cyan-500/10 blur-[120px]" />
         <div className="absolute right-[-12rem] top-1/4 h-[32rem] w-[32rem] rounded-full bg-violet-600/10 blur-[130px]" />
         <div className="absolute bottom-[-14rem] left-1/3 h-[28rem] w-[28rem] rounded-full bg-blue-500/10 blur-[120px]" />
@@ -938,7 +939,7 @@ function App() {
       <header className="relative z-20 border-b border-slate-800/70 bg-[#0B0F19]/80 backdrop-blur-xl">
         <nav className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 to-blue-600 shadow-lg shadow-cyan-950/50">
+            <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-cyan-400 via-sky-500 to-amber-400 shadow-lg shadow-cyan-950/50">
               <Zap className="h-5 w-5 fill-white text-white" />
             </div>
             <div>
@@ -987,8 +988,8 @@ function App() {
         </nav>
       </header>
 
-      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        <section className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <main className="relative z-10 mx-auto max-w-2xl px-4 py-8">
+        <section className="mb-6 grid grid-cols-2 gap-3">
           <TelemetryCell label="RPC latency" value={telemetry.latency === null ? "—" : `${telemetry.latency} ms`} icon={<Activity className="h-3.5 w-3.5" />} healthy={telemetry.healthy} />
           <TelemetryCell label="Latest ledger" value={telemetry.ledger?.toLocaleString() || "—"} icon={<Gauge className="h-3.5 w-3.5" />} />
           <TelemetryCell label="Active vault value" value={`${activeValue.toFixed(2)} USDC${tryPerUsdc > 0 ? ` · ${(activeValue * tryPerUsdc).toFixed(0)} TL` : ""}`} icon={<ShieldCheck className="h-3.5 w-3.5" />} />
@@ -1006,12 +1007,12 @@ function App() {
           </a>
         </section>
 
-        <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,520px)_minmax(0,1fr)]">
+        <div className="space-y-6">
           <section className="rounded-2xl border border-slate-800/80 bg-slate-900/70 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl sm:p-5">
             <div className="mb-5 grid grid-cols-2 rounded-xl bg-slate-950/70 p-1" role="tablist" aria-label="Vault actions">
               {([
-                { id: "order", label: "Create Limit Order" },
-                { id: "ramp", label: "Bank Ramp (TRY ⇄ USDC)" },
+                { id: "order", label: "Limit Order" },
+                { id: "ramp", label: "TRY Bank Bridge" },
               ] as const).map((item) => (
                 <button
                   key={item.id}
@@ -1042,7 +1043,7 @@ function App() {
                 }}
               />
             ) : (
-              <>
+              <div key="limit-order-panel">
                 <div className="mb-5 flex items-end justify-between">
                   <div>
                     <h2 className="text-lg font-semibold text-white">Create limit order</h2>
@@ -1053,9 +1054,9 @@ function App() {
 
                 <form onSubmit={submitOrder} className="space-y-3">
                   <Field label="YOU DEPOSIT" suffix={COLLATERAL_SYMBOL} value={amountIn} onChange={setAmountIn} disabled={lifecycle === "running"} fiatValue={tryPerUsdc > 0 ? `≈ ${(numericAmount * tryPerUsdc).toFixed(2)} TRY` : undefined} />
-                  <div className="grid grid-cols-4 gap-2">{[25, 50, 75, 100].map((percentage) => <button key={percentage} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="rounded-lg border border-slate-800 bg-slate-950/50 py-2 text-[10px] font-medium text-slate-400 transition hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-40">{percentage}%</button>)}</div>
+                  <div className="grid grid-cols-3 gap-2">{[25, 50, 100].map((percentage) => <button key={percentage.toString()} type="button" disabled={lifecycle === "running"} onClick={() => fillBalancePercentage(percentage)} className="rounded-lg border border-slate-800 bg-slate-950/50 py-2 text-[10px] font-medium text-slate-400 transition hover:border-cyan-500/40 hover:text-cyan-300 disabled:opacity-40">{percentage}%</button>)}</div>
                   <div className="relative flex h-5 justify-center"><span className="absolute grid h-8 w-8 place-items-center rounded-full border border-slate-700 bg-slate-900 text-slate-400"><ArrowDown className="h-4 w-4" /></span></div>
-                  <Field label="MINIMUM RECEIVE" suffix={TARGET_SYMBOL} value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} fiatValue={tryPerUsdc > 0 && numericMinOut > 0 ? `≈ ${(numericMinOut * effectivePrice * tryPerUsdc).toFixed(2)} TRY` : undefined} />
+                  <Field label="TARGET RATE / MIN OUTPUT" suffix={TARGET_SYMBOL} value={minAmountOut} onChange={setMinAmountOut} disabled={lifecycle === "running"} fiatValue={tryPerUsdc > 0 && numericMinOut > 0 ? `1 XLM ≈ ${triggerPriceTry.toFixed(2)} TRY via SEP-38` : undefined} />
 
                   <div className="grid grid-cols-2 gap-3 pt-1">
                     <div>
@@ -1069,10 +1070,10 @@ function App() {
                     <Breakdown label="Full swap input" value={`${numericAmount.toFixed(4)} USDC`} />
                     <Breakdown label="Keeper reward" value={`${keeperFeePercent}% of output`} />
                     <Breakdown label="Trigger price" value={tryPerUsdc > 0 ? `${triggerPriceTry.toFixed(2)} TRY / XLM` : "Rate unavailable"} strong />
-                    {rateSource && <p className="mt-2 text-[9px] text-slate-600">{rateSource}</p>}
+                    {rateSource ? <div key="rate-source" className="mt-2 text-[9px] text-slate-600">{rateSource}</div> : null}
                   </div>
 
-                  <button type="submit" disabled={lifecycle === "running"} className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-400 to-blue-500 py-3.5 text-sm font-bold text-slate-950 shadow-lg shadow-cyan-950/40 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
+                  <button type="submit" disabled={lifecycle === "running"} className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 py-4 text-sm font-semibold text-white shadow-lg shadow-cyan-500/20 transition hover:from-cyan-400 hover:to-blue-500 disabled:cursor-not-allowed disabled:opacity-50">
                     {lifecycle === "running" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
                     Create limit order
                   </button>
@@ -1081,26 +1082,67 @@ function App() {
                 <div className="mt-5 border-t border-slate-800/80 pt-4">
                   <div className="grid grid-cols-4 gap-1">{lifecycleLabels.map((label, index) => { const done = lifecycleStep > index || lifecycle === "complete"; const current = lifecycle === "running" && lifecycleStep === index; return <div key={label} className="text-center"><div className={`mx-auto mb-2 grid h-7 w-7 place-items-center rounded-full border ${done ? "border-emerald-500 bg-emerald-500 text-slate-950" : current ? "border-cyan-400 bg-cyan-500/10 text-cyan-300" : "border-slate-800 text-slate-600"}`}>{done ? <Check className="h-3.5 w-3.5" /> : current ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <span className="text-[10px]">{index + 1}</span>}</div><span className="text-[9px] leading-tight text-slate-600">{label}</span></div>; })}</div>
                 </div>
-                {message && <div className="mt-4 flex items-start gap-2 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 text-xs text-slate-300"><Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" />{message}</div>}
-              </>
+                {message ? <div key="order-message" className="mt-4 flex items-start gap-2 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 text-xs text-slate-300"><Activity className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cyan-400" /><div>{message}</div></div> : null}
+              </div>
             )}
           </section>
 
-          <section className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-900/70 shadow-2xl shadow-black/40 backdrop-blur-xl">
-            <div className="flex flex-col gap-4 border-b border-slate-800/80 p-5 sm:flex-row sm:items-center sm:justify-between">
-              <div><h2 className="text-lg font-semibold text-white">Orders</h2><p className="mt-1 text-xs text-slate-500">Live execution queue and settlement history</p></div>
-              <button onClick={() => void refreshChain()} className="flex items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/50 px-3 py-2 text-[10px] font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />Refresh</button>
-            </div>
-            <div className="flex gap-1 border-b border-slate-800/80 p-2">{([{ id: "active", label: "Active" }, { id: "history", label: "History" }] as const).map((item) => <button key={item.id} onClick={() => setTab(item.id)} className={`rounded-lg px-4 py-2 text-xs font-medium transition ${tab === item.id ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"}`}>{item.label}</button>)}</div>
+          {actionTab === "order" ? (
+            <section key="orders-panel" className="min-w-0 rounded-2xl border border-slate-800/80 bg-slate-900/80 p-5 shadow-2xl shadow-black/40 backdrop-blur-xl">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div><h2 className="text-lg font-semibold text-white">Your orders</h2><p className="mt-1 text-xs text-slate-500">Live execution queue and settlement history</p></div>
+                <button type="button" onClick={() => void refreshChain()} className="flex items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/50 px-3 py-2 text-[10px] font-medium text-slate-400 transition hover:bg-slate-800 hover:text-white"><RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`} />Refresh</button>
+              </div>
 
-            <div className="overflow-x-auto p-2">
-              <table className="w-full min-w-[760px] border-separate border-spacing-y-2 text-left">
-                <thead className="text-[9px] uppercase tracking-wider text-slate-600"><tr><th className="px-3 py-1">Order</th><th className="px-3 py-1">Status</th><th className="px-3 py-1">Owner</th><th className="px-3 py-1 text-right">Sell</th><th className="px-3 py-1 text-right">Minimum receive</th><th className="px-3 py-1 text-right">Action</th></tr></thead>
-                <tbody>{visibleOrders.map((order) => <tr key={order.id} className="group bg-slate-950/40 text-xs transition hover:bg-slate-800/40"><td className="rounded-l-xl px-3 py-3 font-semibold text-cyan-300">#{order.id}</td><td className="px-3 py-3"><span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold ${order.status === "Active" ? "bg-cyan-500/10 text-cyan-300" : order.status === "Executed" ? "bg-emerald-500/10 text-emerald-300" : "bg-slate-700/50 text-slate-400"}`}>{order.status === "Executed" ? "Filled" : order.status}</span></td><td className="px-3 py-3 font-mono text-slate-500">{shortAddress(order.owner)}</td><td className="px-3 py-3 text-right font-medium text-white">{order.amountIn.toFixed(2)} USDC{tryPerUsdc > 0 && <span className="block text-[10px] font-normal text-slate-600">≈ {(order.amountIn * tryPerUsdc).toFixed(2)} TRY</span>}</td><td className="px-3 py-3 text-right text-slate-300">{order.minAmountOut.toFixed(4)} XLM<span className="block text-[10px] text-slate-600">{(order.feeBps / 100).toFixed(2)}% bounty</span></td><td className="rounded-r-xl px-3 py-3 text-right"><div className="flex justify-end gap-2">{order.status === "Active" && walletAddress && <button type="button" disabled={lifecycle === "running"} onClick={() => void executeOrder(order.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-[10px] font-bold text-slate-950 transition hover:bg-amber-300 disabled:opacity-40">⚡ Execute (Demo)</button>}{order.status === "Active" && order.owner === walletAddress && <button type="button" disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40">Cancel</button>}</div></td></tr>)}</tbody>
-              </table>
-              {visibleOrders.length === 0 && <div className="grid min-h-64 place-items-center"><div className="max-w-sm px-6 text-center">{tab === "history" ? <><div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-cyan-500/10"><Activity className="h-5 w-5 text-cyan-400" /></div><p className="text-sm font-medium text-slate-300">No settled orders yet</p><p className="mt-2 text-xs leading-relaxed text-slate-600">Executed and cancelled orders will appear here.</p></> : <><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="text-sm font-medium text-slate-400">No active orders</p><p className="mt-2 text-xs text-slate-600">Create a limit order to start the keeper flow.</p></>}</div></div>}
-            </div>
-          </section>
+              <div className="my-4 flex gap-1 rounded-xl bg-slate-950/60 p-1">{([{ id: "active", label: "Active" }, { id: "history", label: "History" }] as const).map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`flex-1 rounded-lg px-4 py-2 text-xs font-medium transition ${tab === item.id ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"}`}>{item.label}</button>)}</div>
+
+              <div className="space-y-3">
+                {visibleOrders.map((order) => (
+                  <div key={order.id.toString()} className="rounded-xl border border-slate-800/60 bg-slate-950/50 p-4 transition hover:border-slate-700 hover:bg-slate-800/40">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-white">Order #{order.id}</span>
+                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${order.status === "Active" ? "bg-emerald-500/10 text-emerald-300" : order.status === "Executed" ? "bg-cyan-500/10 text-cyan-300" : "bg-slate-700/50 text-slate-400"}`}>{order.status === "Executed" ? "Filled" : order.status}</span>
+                        </div>
+                        <p className="mt-1 font-mono text-[10px] text-slate-600">{shortAddress(order.owner, 8, 6)}</p>
+                      </div>
+                      <div className="rounded-full border border-slate-700/70 bg-slate-800/70 px-3 py-1 text-[10px] font-semibold text-slate-300">USDC / XLM</div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-2 gap-3 rounded-xl bg-slate-950/60 p-3">
+                      <div key="collateral">
+                        <p className="text-[9px] uppercase tracking-widest text-slate-600">Collateral</p>
+                        <p className="mt-1 text-sm font-semibold text-white">{order.amountIn.toFixed(2)} USDC</p>
+                        {tryPerUsdc > 0 ? <div key="collateral-try" className="mt-1 text-[10px] text-slate-500">≈ {(order.amountIn * tryPerUsdc).toFixed(2)} TRY</div> : null}
+                      </div>
+                      <div key="target" className="text-right">
+                        <p className="text-[9px] uppercase tracking-widest text-slate-600">Target price</p>
+                        <p className="mt-1 text-sm font-semibold text-white">{order.minAmountOut.toFixed(4)} XLM min</p>
+                        {tryPerUsdc > 0 && order.minAmountOut > 0 ? <div key="target-try" className="mt-1 inline-flex rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] text-cyan-300">1 XLM ≈ {((order.amountIn / order.minAmountOut) * tryPerUsdc).toFixed(2)} TRY</div> : null}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[10px] text-slate-600">Keeper bounty {(order.feeBps / 100).toFixed(2)}%</span>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {order.status === "Active" ? <button key="execute" type="button" disabled={!walletAddress || lifecycle === "running"} onClick={() => void executeOrder(order.id)} className="inline-flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-2 text-[10px] font-bold text-slate-950 transition hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40">⚡ Execute (Demo)</button> : null}
+                        {order.status === "Active" && order.owner === walletAddress ? <button key="cancel" type="button" disabled={lifecycle === "running"} onClick={() => void cancelOrder(order.id)} className="inline-flex items-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-[10px] font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40">Cancel</button> : null}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+
+                {visibleOrders.length === 0 ? (
+                  tab === "history" ? (
+                    <div key="empty-history" className="grid min-h-52 place-items-center rounded-xl border border-dashed border-slate-800 text-center"><div><div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-cyan-500/10"><Activity className="h-5 w-5 text-cyan-400" /></div><p className="text-sm font-medium text-slate-300">No settled orders yet</p><p className="mt-2 text-xs text-slate-600">Executed and cancelled orders will appear here.</p></div></div>
+                  ) : (
+                    <div key="empty-active" className="grid min-h-52 place-items-center rounded-xl border border-dashed border-slate-800 text-center"><div><Clock3 className="mx-auto mb-3 h-6 w-6 text-slate-700" /><p className="text-sm font-medium text-slate-400">No active orders</p><p className="mt-2 text-xs text-slate-600">Create a limit order to start the keeper flow.</p></div></div>
+                  )
+                ) : null}
+              </div>
+            </section>
+          ) : null}
         </div>
       </main>
     </div>
