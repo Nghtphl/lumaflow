@@ -177,7 +177,7 @@ impl TriggerVault {
         Self::bump_instance_ttl(&env);
 
         env.events().publish(
-            (symbol_short!("order"), symbol_short!("create")),
+            (symbol_short!("order"), symbol_short!("created")),
             (new_id, owner, amount_in),
         );
 
@@ -197,14 +197,13 @@ impl TriggerVault {
             return Err(Error::OrderNotActive);
         }
 
+        order.status = OrderStatus::Cancelled;
+        env.storage().persistent().set(&DataKey::Order(order_id), &order);
         Self::bump_persistent_key(&env, &DataKey::Order(order_id));
+        Self::bump_instance_ttl(&env);
 
         let token_client = token::Client::new(&env, &order.token_in);
         token_client.transfer(&env.current_contract_address(), &order.owner, &order.amount_in);
-
-        order.status = OrderStatus::Cancelled;
-        env.storage().persistent().set(&DataKey::Order(order_id), &order);
-        Self::bump_instance_ttl(&env);
 
         env.events().publish(
             (symbol_short!("order"), symbol_short!("cancel")),

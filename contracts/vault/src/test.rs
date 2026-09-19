@@ -153,13 +153,44 @@ fn test_rejects_zero_amounts() {
         .try_create_order(&owner, &token_in, &token_out, &0, &1, &100)
         .is_err());
     assert!(client
+        .try_create_order(&owner, &token_in, &token_out, &-1, &1, &100)
+        .is_err());
+    assert!(client
         .try_create_order(&owner, &token_in, &token_out, &1, &0, &100)
+        .is_err());
+    assert!(client
+        .try_create_order(&owner, &token_in, &token_out, &1, &-1, &100)
         .is_err());
     assert!(client
         .try_create_order(&owner, &token_in, &token_in, &1, &1, &100)
         .is_err());
     assert!(client
         .try_create_order(&owner, &token_in, &token_out, &1, &1, &1_001)
+        .is_err());
+}
+
+#[test]
+fn test_init_requires_admin_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let router = Address::generate(&env);
+    let contract_id = env.register(TriggerVault, ());
+    let client = TriggerVaultClient::new(&env, &contract_id);
+
+    assert!(client.try_init(&admin, &router).is_err());
+}
+
+#[test]
+fn test_create_order_requires_owner_authorization() {
+    let env = Env::default();
+    let contract_id = env.register(TriggerVault, ());
+    let client = TriggerVaultClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let token_in = Address::generate(&env);
+    let token_out = Address::generate(&env);
+
+    assert!(client
+        .try_create_order(&owner, &token_in, &token_out, &1, &1, &100)
         .is_err());
 }
 
