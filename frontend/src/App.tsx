@@ -87,7 +87,9 @@ interface Notice {
 }
 
 const WRONG_NETWORK_MESSAGE =
-  "Lütfen Freighter cüzdanınızı Testnet ağına geçirin!";
+  "Please switch your Freighter wallet to the Testnet network.";
+const SIGNATURE_REJECTED_MESSAGE =
+  "Signature Rejected: Transaction rejected by wallet.";
 
 const parseFreighterAddress = (result: unknown): string => {
   if (typeof result === "string") return result;
@@ -135,7 +137,7 @@ const delay = (ms: number): Promise<void> =>
 const toStroops = (value: string): bigint => {
   const normalizedValue = value.trim().replace(",", ".");
   if (!/^\d+(?:\.\d{0,7})?$/.test(normalizedValue)) {
-    throw new Error("Geçersiz miktar formatı");
+    throw new Error("Invalid amount format");
   }
   const [whole = "0", fraction = ""] = normalizedValue.split(".");
   const normalizedFraction = `${fraction}0000000`.slice(0, 7);
@@ -244,15 +246,15 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
               <Terminal className="h-5 w-5 text-rose-400" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-wide text-white">TERMINAL HATASI</h1>
+              <h1 className="text-sm font-semibold tracking-wide text-white">TERMINAL ERROR</h1>
               <p className="font-mono text-[10px] text-slate-500">RENDER EXECUTION HALTED</p>
             </div>
           </div>
           <div className="px-5 py-5">
             <p className="text-xs leading-relaxed text-slate-400">
-              Beklenmedik bir hata terminal arayüzünü durdurdu. Cüzdan oturumunuz ve
-              zincir üzerindeki emirleriniz etkilenmedi. Terminali yeniden başlatarak
-              devam edebilirsiniz.
+              An unexpected error halted the terminal interface. Your wallet session
+              and on-chain orders are unaffected. You can restart the terminal to
+              continue.
             </p>
             {this.state.error && (
               <pre className="mt-3 max-h-32 overflow-auto border border-slate-800 bg-zinc-950 p-3 font-mono text-[10px] leading-relaxed text-rose-300">
@@ -265,7 +267,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
                 className="flex flex-1 items-center justify-center gap-2 bg-cyan-500 py-3 text-xs font-bold tracking-wide text-slate-950 hover:bg-cyan-400"
               >
                 <RefreshCw className="h-4 w-4" />
-                TERMİNALİ YENİDEN BAŞLAT
+                RESTART TERMINAL
               </button>
               <button
                 onClick={this.handleReload}
@@ -311,19 +313,23 @@ function App() {
     txHash?: string,
   ): void => {
     const id = Date.now();
-    setNotices((current) => [
-      ...current,
-      {
-        id,
-        type,
-        title: safeMessage(title),
-        detail: safeMessage(detail),
-        txHash,
-      },
-    ]);
+    const nextTitle = safeMessage(title);
+    const nextDetail = safeMessage(detail);
+    setNotices((current) => {
+      // Deduplicate: skip if an identical toast is already on screen.
+      const isDuplicate = current.some(
+        (item) => item.title === nextTitle && item.detail === nextDetail,
+      );
+      if (isDuplicate) return current;
+      // Hard-limit to 3 concurrent toasts, discarding the oldest.
+      return [
+        ...current.slice(-2),
+        { id, type, title: nextTitle, detail: nextDetail, txHash },
+      ];
+    });
     window.setTimeout(
       () => setNotices((current) => current.filter((item) => item.id !== id)),
-      5_000,
+      4_500,
     );
   };
 
@@ -554,7 +560,7 @@ function App() {
       const access = await requestAccess();
       const address = parseFreighterAddress(access);
       if (typeof access === "object" && access !== null && "error" in access && access.error) {
-        throw new Error(safeMessage(access.error) || "Wallet access rejected");
+        throw new Error(safeMessage(access.error) || "Wallet access was rejected.");
       }
       if (!address) throw new Error("Freighter did not return an account address");
       window.localStorage.setItem("trigger_vault_wallet", address);
@@ -562,13 +568,13 @@ function App() {
       await fetchWalletBalance(address);
       showNotice(
         "success",
-        `Cüzdan başarıyla bağlandı: ${shortAddress(address, 8, 6)}`,
-        "Freighter bağlantısı kullanıma hazır.",
+        `Wallet Connected: ${shortAddress(address, 8, 6)}`,
+        "Freighter connection is ready to use.",
       );
     } catch (error) {
       const detail = safeMessage(error) || "Wallet connection failed";
       setMessage(detail);
-      showNotice("error", detail, "Freighter cüzdan bağlantısı kurulamadı.");
+      showNotice("error", "Wallet Connection Failed", detail);
     } finally {
       setWalletConnecting(false);
     }
@@ -579,7 +585,7 @@ function App() {
     window.localStorage.removeItem("trigger_vault_wallet");
     setWalletAddress("");
     setWalletBalance(0);
-    showNotice("info", "Cüzdan bağlantısı kesildi", "Freighter oturumu terminalden kaldırıldı.");
+    showNotice("info", "Wallet Disconnected", "Freighter session removed from the terminal.");
   };
 
   const fillBalancePercentage = (percentage: number): void => {
@@ -588,8 +594,8 @@ function App() {
         setAmountIn("0.0000000");
         showNotice(
           "error",
-          "Yetersiz kullanılabilir bakiye",
-          "Stellar rezervi ve ağ ücretleri için en az 2 XLM bırakılmalıdır.",
+          "Insufficient available balance",
+          "At least 2 XLM must be reserved for gas fees and Stellar base reserve.",
         );
         return;
       }
@@ -608,7 +614,7 @@ function App() {
       network.networkPassphrase === NETWORK_PASSPHRASE ||
       network.network.toUpperCase() === "TESTNET";
     if (!isTestnet) {
-      showNotice("error", WRONG_NETWORK_MESSAGE, "İşlem güvenlik nedeniyle durduruldu.");
+      showNotice("error", "Wrong Network", WRONG_NETWORK_MESSAGE);
       throw new Error(WRONG_NETWORK_MESSAGE);
     }
   };
@@ -629,10 +635,10 @@ function App() {
       .setTimeout(60)
       .build();
 
-    showNotice("info", "Simülasyon çalışıyor", "Soroban işlem koşulları doğrulanıyor...");
+    showNotice("info", "Simulating", "Simulating Soroban transaction...");
     const simulation = await server.simulateTransaction(transaction);
     if (!rpc.Api.isSimulationSuccess(simulation)) {
-      showNotice("error", "Simülasyon başarısız oldu", "Emir zincir kurallarını veya piyasa koşullarını karşılamadı.");
+      showNotice("error", "Simulation Failed", "Order did not satisfy on-chain rules or market conditions.");
       throw new Error(
         rpc.Api.isSimulationError(simulation)
           ? safeMessage(simulation.error)
@@ -641,18 +647,20 @@ function App() {
     }
 
     setLifecycleStep(1);
-    showNotice("info", "İmza bekleniyor", "Freighter imza penceresi bekleniyor...");
+    showNotice("info", "Awaiting Signature", "Awaiting Freighter wallet signature...");
     const prepared = rpc.assembleTransaction(transaction, simulation).build();
     const signed = await signTransaction(prepared.toXDR(), {
       networkPassphrase: NETWORK_PASSPHRASE,
       address: walletAddress,
     });
     if (signed.error || !signed.signedTxXdr) {
-      showNotice("error", "İmza reddedildi", "İmza cüzdan tarafından reddedildi.");
-      throw new Error("Freighter signature was rejected");
+      // Signal a user rejection; the caller's catch shows exactly one toast
+      // and resets lifecycle to idle without retrying.
+      throw new Error(SIGNATURE_REJECTED_MESSAGE);
     }
 
     setLifecycleStep(2);
+    showNotice("info", "Broadcasting", "Broadcasting transaction to Stellar Testnet...");
     const signedTransaction = TransactionBuilder.fromXDR(
       signed.signedTxXdr,
       NETWORK_PASSPHRASE,
@@ -663,7 +671,7 @@ function App() {
     }
 
     setLifecycleStep(3);
-    showNotice("info", "Defter onayı bekleniyor", "İşlem deftere yazılıyor...");
+    showNotice("info", "Awaiting Confirmation", "Awaiting ledger confirmation (~5s)...");
     const result = await waitForTransaction(submission.hash);
     if (result.status !== "SUCCESS") {
       throw new Error(`Transaction failed: ${submission.hash}`);
@@ -676,27 +684,27 @@ function App() {
     if (operationLock.current) return;
     setMessage("");
     if (!walletAddress) {
-      const detail = "Lütfen önce sağ üstten Freighter cüzdanınızı bağlayın!";
+      const detail = "Please connect your Freighter wallet first.";
       setMessage(detail);
-      showNotice("error", detail, "Emir oluşturma işlemi durduruldu.");
+      showNotice("error", "Wallet Not Connected", detail);
       return;
     }
     if (numericAmount <= 0 || numericMinOut <= 0) {
-      const detail = "Amount and minimum output must be greater than zero.";
+      const detail = "Collateral and minimum output must be greater than zero.";
       setMessage(detail);
-      showNotice("error", "Invalid order values", detail);
+      showNotice("error", "Invalid Order Values", detail);
       return;
     }
     if (numericAmount > walletBalance) {
-      const detail = `Yetersiz XLM bakiyesi! Kullanılabilir: ${walletBalance.toFixed(7)} XLM.`;
+      const detail = `Insufficient balance: Available balance is ${walletBalance.toFixed(7)} XLM.`;
       setMessage(detail);
-      showNotice("error", "Yetersiz XLM bakiyesi!", detail);
+      showNotice("error", "Insufficient Balance", detail);
       return;
     }
     if (!Number.isInteger(numericFeeBps) || numericFeeBps < 0 || numericFeeBps > 1_000) {
-      const detail = "Keeper fee cannot exceed 1,000 bps.";
+      const detail = "Keeper bounty cannot exceed 1,000 BPS (10.0%).";
       setMessage(detail);
-      showNotice("error", "Invalid keeper fee", detail);
+      showNotice("error", "Invalid Keeper Bounty", detail);
       return;
     }
 
@@ -704,9 +712,9 @@ function App() {
       CONFIGURED_TOKEN_OUT ||
       orders.find((order) => order.tokenOut !== NATIVE_XLM_SAC)?.tokenOut;
     if (!tokenOut) {
-      const detail = "Configure VITE_TOKEN_OUT_CONTRACT_ID before creating an order.";
+      const detail = "Target token contract is not configured.";
       setMessage(detail);
-      showNotice("error", "Output token missing", detail);
+      showNotice("error", "Output Token Missing", detail);
       return;
     }
 
@@ -727,16 +735,22 @@ function App() {
       setMessage(`Order confirmed on ledger: ${hash}`);
       showNotice(
         "success",
-        "Emir başarıyla oluşturuldu!",
-        "İşlem Testnet defterinde onaylandı.",
+        "Order successfully created on-chain!",
+        "Transaction confirmed on the Testnet ledger.",
         hash,
       );
     } catch (error) {
-      setLifecycle("error");
       const detail = safeMessage(error) || "Order transaction failed";
       setMessage(detail);
-      if (detail !== WRONG_NETWORK_MESSAGE) {
-        showNotice("error", "Order failed", detail);
+      if (detail === SIGNATURE_REJECTED_MESSAGE) {
+        // User rejected in Freighter: one clean toast, reset to idle, no retry.
+        setLifecycle("idle");
+        showNotice("error", "Signature Rejected", "Transaction rejected by wallet.");
+      } else {
+        setLifecycle("error");
+        if (detail !== WRONG_NETWORK_MESSAGE) {
+          showNotice("error", "Order Failed", detail);
+        }
       }
     } finally {
       // Never leave the terminal locked in a perpetual "running" state, even if
@@ -763,16 +777,22 @@ function App() {
       );
       showNotice(
         "success",
-        "İptal başarılı, fonlar cüzdana aktarıldı",
-        `Bakiye değişimi ${(balanceAfter - balanceBefore).toFixed(7)} XLM`,
+        `Order #${id} cancelled. Collateral reclaimed.`,
+        `Balance change ${(balanceAfter - balanceBefore).toFixed(7)} XLM`,
         hash,
       );
     } catch (error) {
-      setLifecycle("error");
       const detail = safeMessage(error) || "Cancellation failed";
       setMessage(detail);
-      if (detail !== WRONG_NETWORK_MESSAGE) {
-        showNotice("error", "Cancellation failed", detail);
+      if (detail === SIGNATURE_REJECTED_MESSAGE) {
+        // User rejected in Freighter: one clean toast, reset to idle, no retry.
+        setLifecycle("idle");
+        showNotice("error", "Signature Rejected", "Transaction rejected by wallet.");
+      } else {
+        setLifecycle("error");
+        if (detail !== WRONG_NETWORK_MESSAGE) {
+          showNotice("error", "Cancellation Failed", detail);
+        }
       }
     } finally {
       // Never leave the terminal locked in a perpetual "running" state, even if
@@ -935,7 +955,7 @@ function ToastNotice({ notice, onClose }: { notice: Notice; onClose: () => void 
               rel="noreferrer"
               className="mt-2 inline-flex items-center gap-1.5 font-mono text-[10px] text-cyan-400 hover:text-cyan-300"
             >
-              VIEW ON STELLAR EXPERT
+              VIEW ON STELLAREXPERT
               <ExternalLink className="h-3 w-3" />
             </a>
           )}
