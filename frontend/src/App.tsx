@@ -152,9 +152,9 @@ async function waitForTransaction(hash: string): Promise<RawTransactionStatus> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         jsonrpc: "2.0",
-        id: `tx-${hash}`,
+        id: 1,
         method: "getTransaction",
-        params: { hash },
+        params: [hash],
       }),
     });
     if (!response.ok) {
