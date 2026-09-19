@@ -90,6 +90,8 @@ const WRONG_NETWORK_MESSAGE =
   "Please switch your Freighter wallet to the Testnet network.";
 const SIGNATURE_REJECTED_MESSAGE =
   "Signature Rejected: Transaction rejected by wallet.";
+const PENDING_CONFIRMATION_MESSAGE =
+  "Transaction is still pending on the network. It may confirm shortly - refresh to check.";
 
 const parseFreighterAddress = (result: unknown): string => {
   if (typeof result === "string") return result;
@@ -168,46 +170,59 @@ async function simulateRead<T>(method: string, ...args: xdr.ScVal[]): Promise<T>
 }
 
 interface RawTransactionStatus {
-  status: "SUCCESS" | "FAILED" | "NOT_FOUND";
+  status: string;
   ledger?: number;
   [key: string]: unknown;
 }
 
+async function fetchTransactionStatus(
+  hash: string,
+): Promise<RawTransactionStatus | null> {
+  // Soroban RPC expects a named parameter object; a transient network or RPC
+  // hiccup must NOT be reported as a failed transaction, so callers keep
+  // polling when this resolves to null.
+  const response = await fetch(RPC_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getTransaction",
+      params: { hash },
+    }),
+  });
+  if (!response.ok) return null;
+  const payload = (await response.json()) as {
+    result?: RawTransactionStatus;
+    error?: unknown;
+  };
+  if (payload.error || !payload.result) return null;
+  return payload.result;
+}
+
 async function waitForTransaction(hash: string): Promise<RawTransactionStatus> {
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
-    const response = await fetch(RPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "getTransaction",
-        params: [hash],
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`getTransaction HTTP ${response.status}`);
+    let result: RawTransactionStatus | null = null;
+    try {
+      result = await fetchTransactionStatus(hash);
+    } catch {
+      // Network error while polling: the transaction may still succeed, so
+      // retry instead of declaring a failure the user will see contradicted.
+      result = null;
     }
-    const payload = (await response.json()) as {
-      result?: RawTransactionStatus;
-      error?: unknown;
-    };
-    if (payload.error) {
-      throw new Error(`getTransaction RPC error: ${safeMessage(payload.error)}`);
-    }
-    const result = payload.result;
-    if (!result) throw new Error("getTransaction returned no result");
-    if (result.status === "SUCCESS") return result;
-    if (result.status === "FAILED") {
-      throw new Error(`Transaction failed: ${safeMessage(result)}`);
-    }
-    if (result.status !== "NOT_FOUND") {
-      throw new Error(`Unexpected transaction status: ${safeMessage(result)}`);
+    if (result) {
+      if (result.status === "SUCCESS") return result;
+      if (result.status === "FAILED") {
+        throw new Error(`Transaction failed on ledger: ${hash}`);
+      }
+      // NOT_FOUND, PENDING, TRY_AGAIN_LATER and any future status simply mean
+      // the ledger has not closed on this transaction yet.
     }
     await delay(2_000);
   }
-  throw new Error(`Ledger confirmation timed out: ${hash}`);
+  // Timing out is not a failure: the transaction is still in flight.
+  throw new Error(PENDING_CONFIRMATION_MESSAGE);
 }
 
 interface ErrorBoundaryState {
@@ -746,6 +761,12 @@ function App() {
         // User rejected in Freighter: one clean toast, reset to idle, no retry.
         setLifecycle("idle");
         showNotice("error", "Signature Rejected", "Transaction rejected by wallet.");
+      } else if (detail === PENDING_CONFIRMATION_MESSAGE) {
+        // Confirmation polling timed out while the transaction is still in
+        // flight. Never call this a failure: refresh and report it as pending.
+        setLifecycle("idle");
+        showNotice("info", "Confirmation Pending", detail);
+        await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
       } else {
         setLifecycle("error");
         if (detail !== WRONG_NETWORK_MESSAGE) {
@@ -788,6 +809,11 @@ function App() {
         // User rejected in Freighter: one clean toast, reset to idle, no retry.
         setLifecycle("idle");
         showNotice("error", "Signature Rejected", "Transaction rejected by wallet.");
+      } else if (detail === PENDING_CONFIRMATION_MESSAGE) {
+        // Still in flight: report as pending and resync instead of failing.
+        setLifecycle("idle");
+        showNotice("info", "Confirmation Pending", detail);
+        await Promise.all([fetchOrders(), fetchWalletBalance(walletAddress)]);
       } else {
         setLifecycle("error");
         if (detail !== WRONG_NETWORK_MESSAGE) {

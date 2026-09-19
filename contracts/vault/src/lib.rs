@@ -240,7 +240,7 @@ impl TriggerVault {
         let token_in_client = token::Client::new(&env, &order.token_in);
         token_in_client.transfer(&env.current_contract_address(), &router, &order.amount_in);
 
-        // 2. Takas parametrelerini oluştur ve Router'ı çağır
+        // 2. Build the swap parameters and invoke the Router
         let mut path: Vec<Address> = Vec::new(&env);
         path.push_back(order.token_in.clone());
         path.push_back(order.token_out.clone());
@@ -264,7 +264,7 @@ impl TriggerVault {
             return Err(Error::SlippageExceeded);
         }
 
-        // 3. Prim hesapla ve dağıt
+        // 3. Calculate and distribute the keeper bounty
         let fee_amount = (amount_out * (order.fee_bps as i128)) / 10_000;
         let user_amount = amount_out - fee_amount;
 
@@ -273,7 +273,7 @@ impl TriggerVault {
         }
         token_out_client.transfer(&env.current_contract_address(), &order.owner, &user_amount);
 
-        // 4. Durumu güncelle
+        // 4. Update the stored order state
         order.status = OrderStatus::Executed;
         env.storage().persistent().set(&DataKey::Order(order_id), &order);
         Self::bump_instance_ttl(&env);
