@@ -13,7 +13,17 @@
   html {
     -webkit-text-size-adjust: 100%;
     scroll-behavior: smooth;
-    /* The sticky navbar would otherwise clip any element scrolled to by anchor. */
+    /*
+     * The single source of truth for how far the fixed navbar reaches down the
+     * page. Every scroll into a section — anchor links, scrollIntoView,
+     * keyboard navigation — clears the bar by this much.
+     *
+     * Do NOT also put scroll-mt-* on the sections: scroll-padding on the
+     * scroller and scroll-margin on the target ADD, and the section lands
+     * twice as far down as intended, which is far enough to push it past the
+     * navbar's scroll-spy reading line and strand the highlight on the
+     * previous section.
+     */
     scroll-padding-top: 6.5rem;
   }
 

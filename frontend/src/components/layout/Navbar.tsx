@@ -48,6 +48,13 @@ export function Navbar({ sections = [], right, status }: NavbarProps) {
   const [activeSection, setActiveSection] = useState(sections[0]?.id ?? "");
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  // A click is an explicit statement of intent, so the pill moves on the click
+  // rather than waiting for the smooth scroll to arrive. While the page is
+  // travelling the spy is held off: mid-flight it still reads the section
+  // being left, and would drag the highlight back for the whole journey.
+  const pinnedSection = useRef<string | null>(null);
+  const pinTimer = useRef(0);
+
   const progressRef = useRef<HTMLSpanElement>(null);
   const indicatorRef = useRef<HTMLSpanElement>(null);
   const linksRef = useRef<HTMLDivElement>(null);
@@ -75,6 +82,7 @@ export function Navbar({ sections = [], right, status }: NavbarProps) {
       }
 
       if (sections.length === 0) return;
+      if (pinnedSection.current !== null) return;
       // The current section is the last one whose top has crossed the reading
       // line just under the bar. At the very bottom the final section wins
       // outright, so a short last section is still reachable.
@@ -149,8 +157,20 @@ export function Navbar({ sections = [], right, status }: NavbarProps) {
 
   const goToSection = useCallback((id: string) => {
     setMobileOpen(false);
+    setActiveSection(id);
+
+    pinnedSection.current = id;
+    window.clearTimeout(pinTimer.current);
+    // Long enough to cover a smooth scroll across the page, short enough that
+    // a scroll the reader starts themselves takes over almost immediately.
+    pinTimer.current = window.setTimeout(() => {
+      pinnedSection.current = null;
+    }, 900);
+
     document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, []);
+
+  useEffect(() => () => window.clearTimeout(pinTimer.current), []);
 
   const onBrandClick = useCallback(
     (event: React.MouseEvent) => {
@@ -200,10 +220,12 @@ export function Navbar({ sections = [], right, status }: NavbarProps) {
             aria-label="Sections"
             className="relative ml-2 hidden items-center lg:flex"
           >
+            {/* One pill that travels between the sections, rather than a
+                background toggled on and off per link. */}
             <span
               ref={indicatorRef}
               aria-hidden="true"
-              className="pointer-events-none absolute inset-y-1 left-0 rounded-sm bg-fill opacity-0"
+              className="pointer-events-none absolute inset-y-0 left-0 rounded-md bg-surface-3 shadow-sm opacity-0"
             />
             {sections.map((section) => (
               <a
@@ -219,8 +241,11 @@ export function Navbar({ sections = [], right, status }: NavbarProps) {
                   goToSection(section.id);
                 }}
                 className={cn(
-                  "relative z-10 rounded-sm px-3.5 py-2 text-callout font-medium transition-colors duration-200",
-                  activeSection === section.id ? "text-ink" : "text-ink-3 hover:text-ink-2",
+                  "relative z-10 cursor-pointer rounded-md px-3.5 py-1.5 text-callout",
+                  "transition-all duration-200 ease-[cubic-bezier(0.32,0.72,0,1)]",
+                  activeSection === section.id
+                    ? "font-medium text-ink"
+                    : "font-normal text-ink-3 hover:bg-fill/60 hover:text-ink-2",
                 )}
               >
                 {section.label}

@@ -46,7 +46,7 @@ export function LandingPage({ contractUrl }: LandingPageProps) {
     <main className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
       <Masthead contractUrl={contractUrl} />
 
-      <section id="flow" className="scroll-mt-28 pt-24 pb-4">
+      <section id="flow" className="pt-24 pb-4">
         <SectionHeading
           eyebrow="Lifecycle"
           title="How a trigger settles"

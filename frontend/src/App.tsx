@@ -1081,7 +1081,7 @@ function App() {
         </section>
 
         {/* ── Console ─────────────────────────────────────────────────────── */}
-        <section id="console" className="scroll-mt-28 pt-20">
+        <section id="console" className="pt-20">
           <SectionHeading
             eyebrow="Console"
             title="Place a trigger"
@@ -1393,7 +1393,7 @@ function App() {
         </section>
 
         {/* ── Orders ──────────────────────────────────────────────────────── */}
-        <section id="orders" className="scroll-mt-28 pt-20">
+        <section id="orders" className="pt-20">
           <SectionHeading
             eyebrow="Execution queue"
             title="Global orders"
