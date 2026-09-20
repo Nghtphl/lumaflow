@@ -3,8 +3,6 @@ import type { ErrorInfo, ReactNode } from "react";
 import {
   ArrowDownUp,
   ArrowUpRight,
-  Check,
-  ChevronDown,
   CircleAlert,
   Coins,
   Info,
@@ -53,7 +51,6 @@ import { AmountField } from "./components/ui/AmountField";
 import { Button, IconButton } from "./components/ui/Button";
 import { buttonStyles } from "./components/ui/buttonStyles";
 import { Card, CardHeader, SectionLabel } from "./components/ui/Card";
-import { Menu, MenuItem } from "./components/ui/Menu";
 import { EmptyState } from "./components/ui/EmptyState";
 import { Modal } from "./components/ui/Modal";
 import { Reveal } from "./components/ui/Reveal";
@@ -99,13 +96,8 @@ type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type ActionTab = "order" | "ramp";
 type TokenSymbol = "USDC" | "XLM";
-/**
- * The three ways to say the same limit. A trigger is naturally a rate when you
- * are watching an asset ("sell at 9.40") and naturally a total when you are
- * watching a position ("out at 25 dollars"); both land on the one
- * `min_amount_out` the contract is given.
- */
-type TargetMode = "priceUsdc" | "priceTry" | "total";
+/** Which currency a price trigger is typed in. */
+type PriceUnit = "USDC" | "TRY";
 type LifecycleState = "idle" | "running" | "complete" | "error";
 
 const TOKEN_OPTIONS: ReadonlyArray<{
@@ -388,8 +380,8 @@ function App() {
   // `minAmountOut` stays the only figure that reaches the chain. This is how
   // the trigger is *said* — a rate or a total, in dollars or lira — so nobody
   // has to divide their way to the quantity.
-  const [targetValue, setTargetValue] = useState((10 / 38).toFixed(7));
-  const [targetMode, setTargetMode] = useState<TargetMode>("priceUsdc");
+  const [targetValue, setTargetValue] = useState("38");
+  const [priceUnit, setPriceUnit] = useState<PriceUnit>("TRY");
   const [feeBps, setFeeBps] = useState("100");
   const [tab, setTab] = useState<OrderTab>("active");
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -482,44 +474,24 @@ function App() {
     : undefined;
   const comparator = limitComparator(depositToken);
 
-  // The three readings of one trigger. A rate answers "at what price", a total
-  // answers "for how much" — the same order either way.
-  const targetModes: ReadonlyArray<{ id: TargetMode; label: string; note: string }> = [
-    {
-      id: "priceUsdc",
-      label: "USDC / XLM",
-      note: "Settle at this dollar price",
-    },
-    ...(tryPerUsdc > 0
-      ? [
-          {
-            id: "priceTry" as TargetMode,
-            label: "TRY / XLM",
-            note: "Settle at this lira price",
-          },
-        ]
-      : []),
-    {
-      id: "total",
-      label: `${targetToken} total`,
-      note: `Settle once this much ${targetToken} comes back`,
-    },
-  ];
-  const activeTargetMode =
-    targetModes.find((mode) => mode.id === targetMode) ?? targetModes[0];
+  const triggerIsPriceField = depositToken === "XLM";
+  const triggerLabel = triggerIsPriceField ? "XLM price" : "Total you receive";
+  const triggerUnitLabel = triggerIsPriceField
+    ? `${priceUnit} / XLM`
+    : targetToken;
 
-  // Whatever the field is stating, the hint carries a reading it is not, so no
-  // conversion has to be done on paper.
+  // The field states one reading; the hint carries the other, so no conversion
+  // has to be done on paper.
   const triggerHint =
     effectivePrice <= 0
       ? undefined
-      : targetMode === "total"
-        ? `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`
-        : targetMode === "priceUsdc"
-          ? tryPerUsdc > 0
+      : triggerIsPriceField
+        ? priceUnit === "TRY"
+          ? `≈ ${formatUsdcPrice(effectivePrice)} USDC / XLM`
+          : tryPerUsdc > 0
             ? `≈ ${triggerPriceTry.toFixed(4)} TRY / XLM`
             : undefined
-          : `≈ ${formatUsdcPrice(effectivePrice)} USDC / XLM`;
+        : `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`;
 
   const safeOrders = useMemo(
     () =>
@@ -814,42 +786,35 @@ function App() {
     showNotice("info", "Wallet Disconnected", "Freighter session removed from the terminal.");
   };
 
-  const minOutForPrice = (usdcPerXlm: number, amount: number): string =>
-    depositToken === "USDC"
-      ? (amount / usdcPerXlm).toFixed(7)
-      : (amount * usdcPerXlm).toFixed(7);
+  // The trigger follows the direction, because each direction has one natural
+  // way to be watched. Putting XLM in is a sale, watched as a price — "out at
+  // 9.40". Putting dollars in buys XLM, and a dollar target on that leg would
+  // need a price feed this system does not have, so it is watched as the
+  // quantity that comes back.
+  const triggerIsPrice = depositToken === "XLM";
 
-  /** The typed trigger, read through its mode, as a `min_amount_out`. */
-  const targetToMinOut = (
-    value: string,
-    mode: TargetMode,
-    amount: number,
-  ): string | null => {
+  const usdcPerXlmFrom = (value: string): number => {
     const entered = parseDecimal(value);
-    if (entered <= 0) return null;
-    // A total already is the minimum: it names the quantity coming back.
-    if (mode === "total") return entered.toFixed(7);
-    if (amount <= 0) return null;
-    const usdcPerXlm =
-      mode === "priceUsdc" ? entered : tryPerUsdc > 0 ? entered / tryPerUsdc : 0;
-    if (usdcPerXlm <= 0) return null;
-    return minOutForPrice(usdcPerXlm, amount);
+    if (entered <= 0) return 0;
+    if (priceUnit === "USDC") return entered;
+    return tryPerUsdc > 0 ? entered / tryPerUsdc : 0;
   };
 
-  /** The same trigger restated in `mode`, read back off the amounts. */
-  const minOutToTarget = (mode: TargetMode): string | null => {
-    if (mode === "total") {
-      const minOut = parseDecimal(minAmountOut);
-      return minOut > 0 ? minOut.toFixed(7) : null;
+  /** The typed trigger as the `min_amount_out` the contract is given. */
+  const targetToMinOut = (value: string, amount: number): string | null => {
+    // Buying: the trigger already is the minimum — it names what comes back.
+    if (!triggerIsPrice) {
+      const entered = parseDecimal(value);
+      return entered > 0 ? entered.toFixed(7) : null;
     }
-    if (effectivePrice <= 0) return null;
-    if (mode === "priceUsdc") return effectivePrice.toFixed(7);
-    return tryPerUsdc > 0 ? (effectivePrice * tryPerUsdc).toFixed(4) : null;
+    const usdcPerXlm = usdcPerXlmFrom(value);
+    if (usdcPerXlm <= 0 || amount <= 0) return null;
+    return (amount * usdcPerXlm).toFixed(7);
   };
 
   const handleTargetValue = (value: string): void => {
     setTargetValue(value);
-    const next = targetToMinOut(value, targetMode, parseDecimal(amountIn));
+    const next = targetToMinOut(value, parseDecimal(amountIn));
     if (next) setMinAmountOut(next);
   };
 
@@ -857,18 +822,23 @@ function App() {
   // trigger is itself a quantity, in which case there is nothing to restate.
   const handleAmountIn = (value: string): void => {
     setAmountIn(value);
-    if (targetMode === "total") return;
-    const next = targetToMinOut(targetValue, targetMode, parseDecimal(value));
+    if (!triggerIsPrice) return;
+    const next = targetToMinOut(targetValue, parseDecimal(value));
     if (next) setMinAmountOut(next);
   };
 
-  const selectTargetMode = (mode: TargetMode): void => {
-    if (mode === targetMode) return;
-    // Restate from the amounts, which are exact. A part-filled form has none,
-    // so the box keeps what it holds rather than sitting under a wrong label.
-    const restated = minOutToTarget(mode);
-    if (restated) setTargetValue(restated);
-    setTargetMode(mode);
+  // Lira is shown to four places; restating off the amounts rather than the
+  // box keeps a display rounding from becoming the trigger.
+  const selectPriceUnit = (unit: PriceUnit): void => {
+    if (unit === priceUnit || !triggerIsPrice) return;
+    if (effectivePrice > 0 && tryPerUsdc > 0) {
+      setTargetValue(
+        unit === "TRY"
+          ? (effectivePrice * tryPerUsdc).toFixed(4)
+          : effectivePrice.toFixed(7),
+      );
+    }
+    setPriceUnit(unit);
   };
 
   const flipPair = (): void => {
@@ -876,9 +846,18 @@ function App() {
     setTargetToken(depositToken);
     setAmountIn(minAmountOut);
     setMinAmountOut(amountIn);
-    // The reversed order pays out what this one was funded with, so a total
-    // trigger now names that figure. A rate survives the flip untouched.
-    if (targetMode === "total") setTargetValue(amountIn);
+    // The reversal changes what the trigger means, so restate it. Price is
+    // unchanged by a flip, and the quantity coming back becomes this order's
+    // deposit.
+    if (triggerIsPrice) {
+      setTargetValue(amountIn);
+    } else if (effectivePrice > 0) {
+      setTargetValue(
+        priceUnit === "TRY" && tryPerUsdc > 0
+          ? (effectivePrice * tryPerUsdc).toFixed(4)
+          : effectivePrice.toFixed(7),
+      );
+    }
   };
 
   const fillBalancePercentage = (percentage: number): void => {
@@ -1294,75 +1273,36 @@ function App() {
                       </div>
 
                       <AmountField
-                        label="Trigger"
+                        label={triggerLabel}
                         value={targetValue}
                         onChange={handleTargetValue}
                         disabled={busy}
                         hint={triggerHint}
                         aside={`Settles for ${numericMinOut.toFixed(4)} ${targetToken}`}
                         unitNode={
-                          <Menu
-                            ariaLabel="How the trigger is stated"
-                            panelClassName="w-64"
-                            trigger={({ open, toggle }) => (
-                              <button
-                                type="button"
-                                disabled={busy}
-                                onClick={toggle}
-                                aria-haspopup="listbox"
-                                aria-expanded={open}
-                                aria-label={`Trigger stated as ${activeTargetMode.label}. Change.`}
-                                className={cn(
-                                  "pressable flex h-9 items-center gap-2 rounded-full border px-2.5",
-                                  "disabled:pointer-events-none disabled:opacity-50",
-                                  open
-                                    ? "border-line-strong bg-surface-3"
-                                    : "border-line-strong bg-surface-2 hover:bg-surface-3",
-                                )}
-                              >
-                                <span className="text-footnote font-medium text-ink">
-                                  {activeTargetMode.label}
-                                </span>
-                                <ChevronDown
-                                  className={cn(
-                                    "size-3.5 shrink-0 text-ink-4 transition-transform duration-300",
-                                    open && "rotate-180",
-                                  )}
-                                  strokeWidth={2.25}
-                                  aria-hidden="true"
-                                />
-                              </button>
-                            )}
-                          >
-                            {({ close }) =>
-                              targetModes.map((mode) => (
-                                <MenuItem
-                                  key={mode.id}
-                                  selected={mode.id === targetMode}
-                                  onClick={() => {
-                                    selectTargetMode(mode.id);
-                                    close();
-                                  }}
-                                >
-                                  <span className="min-w-0 flex-1">
-                                    <span className="block text-footnote font-medium text-ink">
-                                      {mode.label}
-                                    </span>
-                                    <span className="block truncate text-caption text-ink-4">
-                                      {mode.note}
-                                    </span>
-                                  </span>
-                                  {mode.id === targetMode ? (
-                                    <Check
-                                      className="size-3.5 shrink-0 text-accent-ink"
-                                      strokeWidth={2.5}
-                                      aria-hidden="true"
-                                    />
-                                  ) : null}
-                                </MenuItem>
-                              ))
-                            }
-                          </Menu>
+                          triggerIsPriceField && tryPerUsdc > 0 ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() =>
+                                selectPriceUnit(priceUnit === "TRY" ? "USDC" : "TRY")
+                              }
+                              aria-label={`Price is in ${priceUnit} per XLM. Switch to ${
+                                priceUnit === "TRY" ? "USDC" : "TRY"
+                              }.`}
+                              className={cn(
+                                "pressable rounded-full border border-line-strong bg-surface-2",
+                                "px-3 py-1.5 text-footnote font-medium text-ink-2",
+                                "hover:bg-surface-3 disabled:pointer-events-none disabled:opacity-50",
+                              )}
+                            >
+                              {triggerUnitLabel}
+                            </button>
+                          ) : (
+                            <span className="rounded-full border border-line-strong bg-surface-2 px-3 py-1.5 text-footnote font-medium text-ink-2">
+                              {triggerUnitLabel}
+                            </span>
+                          )
                         }
                       />
 
