@@ -2,7 +2,7 @@
 
 Every figure on this page was decoded from a transaction's `TransactionMeta` through
 Soroban RPC, or read back from the contract — not taken from the UI. Linked from the
-[README](../README.md#6-what-is-verified).
+[README](../README.md#what-is-verified).
 
 **Scope note.** V2 limit orders have completed live executions. V3 stop-loss is deployed
 and tested but **no real price fall has driven a trigger through to a settlement**. The two

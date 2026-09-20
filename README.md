@@ -19,7 +19,7 @@ anchor — the Stellar side is real, the bank transfer is simulated.*
 
 ---
 
-## 2. Product preview
+## Product preview
 
 ![The LumaFlow console on Stellar Testnet: a telemetry bar, the order form, a settlement
 preview panel, and the global order queue listing resting and settled orders across four
@@ -35,7 +35,7 @@ The owner address is masked.](docs/assets/stop-order-card.png)
 
 ---
 
-## 3. Problem & solution
+## Problem & solution
 
 A freelancer in Istanbul invoices in USD and spends in lira. To protect a rate they have
 three bad options: watch the chart themselves, leave funds on a centralised exchange that
@@ -51,7 +51,7 @@ while the order is open. Not promised: that a sale happens at all.
 
 ---
 
-## 4. Limit orders vs stop-loss
+## Limit orders vs stop-loss
 
 | | **V2 — limit order** | **V3 — stop-loss** |
 | --- | --- | --- |
@@ -84,7 +84,7 @@ purpose: a stop order can never be settled through the limit path.
 
 ---
 
-## 5. How it works
+## How it works
 
 **User flow**
 
@@ -156,7 +156,7 @@ SAC balance over Soroban RPC — there is no separate wrapping step for the user
 
 ---
 
-## 6. What is verified
+## What is verified
 
 | Claim | Status | Evidence |
 | --- | --- | --- |
@@ -177,7 +177,7 @@ Full decoded events, raw amounts and reconciliations: **[`docs/VERIFICATION.md`]
 
 ---
 
-## 7. Quickstart
+## Quickstart
 
 ```bash
 git clone https://github.com/Nghtphl/lumaflow.git && cd lumaflow
@@ -237,7 +237,7 @@ Keeper — `RPC_URL` and `VAULT_CONTRACT_ID` are required.
 
 ---
 
-## 8. Security & limitations
+## Security & limitations
 
 **The one decision worth defending.** The vault does not trust the router's return value.
 Settlement reads the contract's own `token_out` balance before and after the swap and uses
@@ -302,7 +302,7 @@ Detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
 
 ---
 
-## 9. Roadmap, documentation, skills & team
+## Roadmap, documentation, skills & team
 
 ### Roadmap
 
