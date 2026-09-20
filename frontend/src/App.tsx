@@ -96,8 +96,6 @@ type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type ActionTab = "order" | "ramp";
 type TokenSymbol = "USDC" | "XLM";
-/** Which currency a price trigger is typed in. */
-type PriceUnit = "USDC" | "TRY";
 type LifecycleState = "idle" | "running" | "complete" | "error";
 
 const TOKEN_OPTIONS: ReadonlyArray<{
@@ -381,7 +379,6 @@ function App() {
   // the trigger is *said* — a rate or a total, in dollars or lira — so nobody
   // has to divide their way to the quantity.
   const [targetValue, setTargetValue] = useState("38");
-  const [priceUnit, setPriceUnit] = useState<PriceUnit>("TRY");
   const [feeBps, setFeeBps] = useState("100");
   const [tab, setTab] = useState<OrderTab>("active");
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -441,6 +438,7 @@ function App() {
 
   const numericAmount = parseDecimal(amountIn);
   const numericMinOut = parseDecimal(minAmountOut);
+  const numericTarget = parseDecimal(targetValue);
   const numericFeeBps = parseDecimal(feeBps);
   // execute_order swaps all collateral; the keeper receives this percentage
   // of the realized output. The output amount is unknown until execution.
@@ -474,24 +472,24 @@ function App() {
     : undefined;
   const comparator = limitComparator(depositToken);
 
+  // Selling XLM is watched as a unit price; buying it is watched as the
+  // quantity that comes back. Either way the pill names the asset actually
+  // settling on chain, never the currency the price happens to be quoted in.
   const triggerIsPriceField = depositToken === "XLM";
-  const triggerLabel = triggerIsPriceField ? "XLM price" : "Total you receive";
-  const triggerUnitLabel = triggerIsPriceField
-    ? `${priceUnit} / XLM`
-    : targetToken;
+  const priceCurrency = tryPerUsdc > 0 ? "TL" : "USD";
+  const triggerLabel = triggerIsPriceField
+    ? `Target XLM price (${priceCurrency})`
+    : "Total you receive";
 
-  // The field states one reading; the hint carries the other, so no conversion
-  // has to be done on paper.
-  const triggerHint =
-    effectivePrice <= 0
-      ? undefined
-      : triggerIsPriceField
-        ? priceUnit === "TRY"
-          ? `≈ ${formatUsdcPrice(effectivePrice)} USDC / XLM`
-          : tryPerUsdc > 0
-            ? `≈ ${triggerPriceTry.toFixed(4)} TRY / XLM`
-            : undefined
-        : `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`;
+  const triggerHint = triggerIsPriceField
+    ? numericMinOut > 0 && numericTarget > 0
+      ? `Settles for ≈ ${numericMinOut.toFixed(2)} USDC (at 1 XLM = ${targetValue.trim()} ${priceCurrency})`
+      : undefined
+    : effectivePrice > 0
+      ? tryPerUsdc > 0
+        ? `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC ≈ ${triggerPriceTry.toFixed(2)} TL`
+        : `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`
+      : undefined;
 
   const safeOrders = useMemo(
     () =>
@@ -793,11 +791,16 @@ function App() {
   // quantity that comes back.
   const triggerIsPrice = depositToken === "XLM";
 
+  // Lira is the quote currency whenever the anchor is publishing a rate. With
+  // no rate there is nothing to divide by, so the price is taken in dollars
+  // instead of leaving the field unusable.
+  const priceInTry = tryPerUsdc > 0;
+
   const usdcPerXlmFrom = (value: string): number => {
     const entered = parseDecimal(value);
     if (entered <= 0) return 0;
-    if (priceUnit === "USDC") return entered;
-    return tryPerUsdc > 0 ? entered / tryPerUsdc : 0;
+    if (!priceInTry) return entered;
+    return entered / tryPerUsdc;
   };
 
   /** The typed trigger as the `min_amount_out` the contract is given. */
@@ -809,7 +812,16 @@ function App() {
     }
     const usdcPerXlm = usdcPerXlmFrom(value);
     if (usdcPerXlm <= 0 || amount <= 0) return null;
-    return (amount * usdcPerXlm).toFixed(7);
+    const minOut = amount * usdcPerXlm;
+    return Number.isFinite(minOut) ? minOut.toFixed(7) : null;
+  };
+
+  /** The trigger restated as a price, in whichever currency the field quotes. */
+  const priceFromAmounts = (): string | null => {
+    if (effectivePrice <= 0) return null;
+    const quoted = priceInTry ? effectivePrice * tryPerUsdc : effectivePrice;
+    if (!Number.isFinite(quoted) || quoted <= 0) return null;
+    return priceInTry ? quoted.toFixed(4) : quoted.toFixed(7);
   };
 
   const handleTargetValue = (value: string): void => {
@@ -827,36 +839,19 @@ function App() {
     if (next) setMinAmountOut(next);
   };
 
-  // Lira is shown to four places; restating off the amounts rather than the
-  // box keeps a display rounding from becoming the trigger.
-  const selectPriceUnit = (unit: PriceUnit): void => {
-    if (unit === priceUnit || !triggerIsPrice) return;
-    if (effectivePrice > 0 && tryPerUsdc > 0) {
-      setTargetValue(
-        unit === "TRY"
-          ? (effectivePrice * tryPerUsdc).toFixed(4)
-          : effectivePrice.toFixed(7),
-      );
-    }
-    setPriceUnit(unit);
-  };
-
   const flipPair = (): void => {
     setDepositToken(targetToken);
     setTargetToken(depositToken);
     setAmountIn(minAmountOut);
     setMinAmountOut(amountIn);
-    // The reversal changes what the trigger means, so restate it. Price is
-    // unchanged by a flip, and the quantity coming back becomes this order's
-    // deposit.
+    // The reversal changes what the trigger means, so restate it: a price
+    // becomes the quantity coming back, and a quantity becomes the price the
+    // pair already implies.
     if (triggerIsPrice) {
       setTargetValue(amountIn);
-    } else if (effectivePrice > 0) {
-      setTargetValue(
-        priceUnit === "TRY" && tryPerUsdc > 0
-          ? (effectivePrice * tryPerUsdc).toFixed(4)
-          : effectivePrice.toFixed(7),
-      );
+    } else {
+      const restated = priceFromAmounts();
+      if (restated) setTargetValue(restated);
     }
   };
 
@@ -1280,29 +1275,9 @@ function App() {
                         hint={triggerHint}
                         aside={`Settles for ${numericMinOut.toFixed(4)} ${targetToken}`}
                         unitNode={
-                          triggerIsPriceField && tryPerUsdc > 0 ? (
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() =>
-                                selectPriceUnit(priceUnit === "TRY" ? "USDC" : "TRY")
-                              }
-                              aria-label={`Price is in ${priceUnit} per XLM. Switch to ${
-                                priceUnit === "TRY" ? "USDC" : "TRY"
-                              }.`}
-                              className={cn(
-                                "pressable rounded-full border border-line-strong bg-surface-2",
-                                "px-3 py-1.5 text-footnote font-medium text-ink-2",
-                                "hover:bg-surface-3 disabled:pointer-events-none disabled:opacity-50",
-                              )}
-                            >
-                              {triggerUnitLabel}
-                            </button>
-                          ) : (
-                            <span className="rounded-full border border-line-strong bg-surface-2 px-3 py-1.5 text-footnote font-medium text-ink-2">
-                              {triggerUnitLabel}
-                            </span>
-                          )
+                          <span className="rounded-full border border-line-strong bg-surface-2 px-3 py-1.5 text-footnote font-medium text-ink-2">
+                            {targetToken}
+                          </span>
                         }
                       />
 
@@ -1443,7 +1418,7 @@ function App() {
                       value={
                         effectivePrice > 0
                           ? `${comparator} ${formatUsdcPrice(effectivePrice)} USDC / XLM`
-                          : "Set an amount and a minimum"
+                          : "Set an amount and a target"
                       }
                       sub={
                         effectivePrice > 0 && tryPerUsdc > 0
