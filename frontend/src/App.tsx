@@ -72,6 +72,14 @@ const HORIZON_URL =
   (import.meta.env.VITE_HORIZON_URL as string | undefined)?.trim() ||
   "https://horizon-testnet.stellar.org";
 const STROOPS_PER_XLM = 10_000_000;
+/**
+ * Reference dollar price of one XLM, used only to turn a dollar target into an
+ * XLM quantity when buying. There is no price feed in this system — the router
+ * is never quoted and the anchor prices USDC, not XLM — so this is a fixed
+ * reference, not a market rate. The field's footnote states it for that reason:
+ * an order priced off a stale constant should say so on its face.
+ */
+const REFERENCE_XLM_USD = 0.2632;
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const NATIVE_XLM_SAC =
   "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
@@ -472,24 +480,20 @@ function App() {
     : undefined;
   const comparator = limitComparator(depositToken);
 
-  // Selling XLM is watched as a unit price; buying it is watched as the
-  // quantity that comes back. Either way the pill names the asset actually
-  // settling on chain, never the currency the price happens to be quoted in.
+  // Both legs are typed in dollars: selling XLM sets the unit price one lumen
+  // must reach, buying sets the total value that has to come back.
   const triggerIsPriceField = depositToken === "XLM";
-  const priceCurrency = tryPerUsdc > 0 ? "TL" : "USD";
   const triggerLabel = triggerIsPriceField
-    ? `Target XLM price (${priceCurrency})`
-    : "Total you receive";
+    ? "Target unit price (USD)"
+    : "Total target to receive (USD)";
 
   const triggerHint = triggerIsPriceField
-    ? numericMinOut > 0 && numericTarget > 0
-      ? `Settles for ≈ ${numericMinOut.toFixed(2)} USDC (at 1 XLM = ${targetValue.trim()} ${priceCurrency})`
-      : undefined
-    : effectivePrice > 0
-      ? tryPerUsdc > 0
-        ? `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC ≈ ${triggerPriceTry.toFixed(2)} TL`
-        : `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`
-      : undefined;
+    ? `Target unit price for 1 XLM in USD. Total output will settle for at least ${(
+        numericAmount * numericTarget
+      ).toFixed(2)} USDC on-chain.`
+    : `Total target amount to receive in USD value. Settles for at least ${(
+        numericTarget / REFERENCE_XLM_USD
+      ).toFixed(2)} XLM on-chain, valuing XLM at ${REFERENCE_XLM_USD} USD.`;
 
   const safeOrders = useMemo(
     () =>
@@ -791,37 +795,20 @@ function App() {
   // quantity that comes back.
   const triggerIsPrice = depositToken === "XLM";
 
-  // Lira is the quote currency whenever the anchor is publishing a rate. With
-  // no rate there is nothing to divide by, so the price is taken in dollars
-  // instead of leaving the field unusable.
-  const priceInTry = tryPerUsdc > 0;
-
-  const usdcPerXlmFrom = (value: string): number => {
-    const entered = parseDecimal(value);
-    if (entered <= 0) return 0;
-    if (!priceInTry) return entered;
-    return entered / tryPerUsdc;
-  };
-
   /** The typed trigger as the `min_amount_out` the contract is given. */
   const targetToMinOut = (value: string, amount: number): string | null => {
-    // Buying: the trigger already is the minimum — it names what comes back.
-    if (!triggerIsPrice) {
-      const entered = parseDecimal(value);
-      return entered > 0 ? entered.toFixed(7) : null;
+    const entered = parseDecimal(value);
+    if (entered <= 0) return null;
+    // Selling: a unit price against the lumens going in.
+    if (triggerIsPrice) {
+      if (amount <= 0) return null;
+      const minOut = amount * entered;
+      return Number.isFinite(minOut) && minOut > 0 ? minOut.toFixed(7) : null;
     }
-    const usdcPerXlm = usdcPerXlmFrom(value);
-    if (usdcPerXlm <= 0 || amount <= 0) return null;
-    const minOut = amount * usdcPerXlm;
-    return Number.isFinite(minOut) ? minOut.toFixed(7) : null;
-  };
-
-  /** The trigger restated as a price, in whichever currency the field quotes. */
-  const priceFromAmounts = (): string | null => {
-    if (effectivePrice <= 0) return null;
-    const quoted = priceInTry ? effectivePrice * tryPerUsdc : effectivePrice;
-    if (!Number.isFinite(quoted) || quoted <= 0) return null;
-    return priceInTry ? quoted.toFixed(4) : quoted.toFixed(7);
+    // Buying: a dollar target, divided by the reference into lumens. It does
+    // not depend on the deposit — the target is the whole statement.
+    const minOut = entered / REFERENCE_XLM_USD;
+    return Number.isFinite(minOut) && minOut > 0 ? minOut.toFixed(7) : null;
   };
 
   const handleTargetValue = (value: string): void => {
@@ -830,8 +817,8 @@ function App() {
     if (next) setMinAmountOut(next);
   };
 
-  // Resizing the deposit holds the trigger and moves the quantity — unless the
-  // trigger is itself a quantity, in which case there is nothing to restate.
+  // A unit price scales with the deposit; a dollar target is the whole
+  // statement on its own and has nothing to restate.
   const handleAmountIn = (value: string): void => {
     setAmountIn(value);
     if (!triggerIsPrice) return;
@@ -844,14 +831,15 @@ function App() {
     setTargetToken(depositToken);
     setAmountIn(minAmountOut);
     setMinAmountOut(amountIn);
-    // The reversal changes what the trigger means, so restate it: a price
-    // becomes the quantity coming back, and a quantity becomes the price the
-    // pair already implies.
+    // Reversing swaps what the trigger means. Selling wants the unit price the
+    // pair already implies; buying wants the dollar value of the lumens that
+    // would now come back.
     if (triggerIsPrice) {
-      setTargetValue(amountIn);
-    } else {
-      const restated = priceFromAmounts();
-      if (restated) setTargetValue(restated);
+      // Becoming the buy leg: `amountIn` is the XLM that will settle.
+      const asUsd = parseDecimal(amountIn) * REFERENCE_XLM_USD;
+      if (asUsd > 0) setTargetValue(asUsd.toFixed(2));
+    } else if (effectivePrice > 0) {
+      setTargetValue(effectivePrice.toFixed(7));
     }
   };
 
@@ -1273,10 +1261,9 @@ function App() {
                         onChange={handleTargetValue}
                         disabled={busy}
                         hint={triggerHint}
-                        aside={`Settles for ${numericMinOut.toFixed(4)} ${targetToken}`}
                         unitNode={
                           <span className="rounded-full border border-line-strong bg-surface-2 px-3 py-1.5 text-footnote font-medium text-ink-2">
-                            {targetToken}
+                            USDC
                           </span>
                         }
                       />

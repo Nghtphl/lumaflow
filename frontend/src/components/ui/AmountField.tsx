@@ -79,7 +79,7 @@ export function AmountField({
             placeholder="0"
           />
           {hint ? (
-            <span className="block truncate px-4 pb-2.5 text-footnote text-ink-3">
+            <span className="block px-4 pb-2.5 text-caption leading-snug text-ink-3">
               {hint}
             </span>
           ) : null}
