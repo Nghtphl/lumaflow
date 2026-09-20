@@ -18,7 +18,7 @@ selection and the deck.
 
 | Handbook requirement | Status |
 | --- | --- |
-| 1. Integration with an eligible protocol | ✅ **Proven on chain.** `execute_order` [`3b2e80ce…`](https://stellar.expert/explorer/testnet/tx/3b2e80cef75ab2381ffef82c7421f1e43bd132fbc62740746c7b5a4c612080ef) emits a `SoroswapRouter` `swap` from the published testnet router `CCJUD55A…` and a `SoroswapPair` `swap`/`sync` from the real pool `CCBX3NZT…`. 100 XLM in, 10.5357430 USDC out, 0.1053570 USDC bounty, 10.4303860 USDC to the owner. |
+| 1. Integration with an eligible protocol | ✅ **Proven on chain.** `execute_order` [`3b2e80ce…`](https://stellar.expert/explorer/testnet/tx/3b2e80cef75ab2381ffef82c7421f1e43bd132fbc62740746c7b5a4c612080ef) emits a `SoroswapRouter` `swap` from the published testnet router `CCJUD55A…` and a `SoroswapPair` `swap`/`sync` from the real pool `CCBX3NZT…`. 10 XLM in, 1.0535743 USDC out, 0.0105357 USDC bounty, 1.0430386 USDC to the owner. |
 | 2. Anchor / local payments (TRY ⇄ Stellar) | ✅ **Implemented and exercised.** SEP-1/6/10/12/38 client in `frontend/src/anchor/`; deposit settled on chain in [`65434cdf…`](https://stellar.expert/explorer/testnet/tx/65434cdf31f19aa23d6408da4c3b6bf32587f3a169fadfa4088e44bbdb411d66). Sandbox anchor — see *Known limitations*. |
 | 3. Core feature — integration is load-bearing | ✅ Settlement **is** the product. There is no code path that fills an order without going through the router, and the fill is validated by the vault's own balance delta. |
 | Deployed on testnet, real functionality | ✅ Vault `CAVF2IT2…R4HWP2INT`, WASM `d9ad61c2…10142c` — verified byte-identical to a local `cargo build --release`. Router slot verified to hold the Soroswap router, not an account. Order #1 created and executed. Two earlier instances stay listed in the console so their resting collateral remains cancellable. |
@@ -85,7 +85,7 @@ passing fill, a fill that clears gross but not net, and the maximum fee — 17 p
 
 This shipped: vault `CAVF2IT2…R4HWP2INT`, proven by
 [`3b2e80ce…`](https://stellar.expert/explorer/testnet/tx/3b2e80cef75ab2381ffef82c7421f1e43bd132fbc62740746c7b5a4c612080ef),
-where the owner's 10.4303860 USDC is checked against a 10.0089550 USDC floor.
+where the owner's 1.0430386 USDC is checked against a 1.0008955 USDC floor.
 
 `frontend/src/vaults.ts` records the minimum's semantics per vault, so the console can say
 truthfully which guarantee an order was written under rather than reinterpreting old
