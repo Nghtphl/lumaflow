@@ -97,8 +97,10 @@ orders under new rules.
 
 1. Confirm sandbox-anchor acceptability and **track eligibility** with the organisers.
 2. Finish the deck on the official template; fill every portal field.
-3. **Set `VITE_VAULT_CONTRACT_ID` to `CAVF2IT2…R4HWP2INT` in the Vercel project
-   environment** and redeploy — the repository is updated, the hosted environment is not.
+3. **Hygiene, not a blocker:** the Vercel project's `VITE_VAULT_CONTRACT_ID` still names
+   the retired V1 vault. The console ignores an environment value that names a retired
+   vault and falls back to the registry, so the live site is correct as it stands — but
+   set it to `CAVF2IT2…R4HWP2INT` so the hosted config stops disagreeing with the repo.
 4. Open <https://trigger-vault-mu.vercel.app> in a clean browser profile and walk the
    judge's path end to end.
 5. Freeze the submission commit.
