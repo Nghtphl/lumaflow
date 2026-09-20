@@ -147,3 +147,35 @@ export const stopBlockedReason = (
   }
   return null;
 };
+
+/** The part of the vault's `Config` the console has to respect. */
+export interface StopConfigView {
+  /** Largest single order, in collateral atoms. */
+  maxAmountIn: bigint;
+  collateralToken: string;
+  payoutToken: string;
+  /** `decimals()` the deployed policy was fixed against. */
+  policyDecimals: number;
+  policyVersion: number;
+}
+
+/**
+ * The vault's own configuration, or null if it is not the shape this build
+ * knows.
+ *
+ * Read rather than assumed. The size cap and the policy scale are fixed at
+ * deployment and have no setter, so a console that hardcodes either one is a
+ * console that will one day size an order against a number the contract does
+ * not hold — and the user finds out from a failed signature.
+ */
+export const toStopConfig = (raw: Record<string, unknown>): StopConfigView | null => {
+  const policy = raw.policy as Record<string, unknown> | undefined;
+  if (!policy || raw.max_amount_in === undefined) return null;
+  return {
+    maxAmountIn: asBigInt(raw.max_amount_in),
+    collateralToken: String(raw.collateral_token),
+    payoutToken: String(raw.payout_token),
+    policyDecimals: Number(policy.decimals),
+    policyVersion: Number(policy.version),
+  };
+};

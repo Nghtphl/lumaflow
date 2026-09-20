@@ -59,8 +59,10 @@ import {
   executeStopArgs,
   fromPriceAtoms,
   toPriceAtoms,
+  toStopConfig,
   toStopOrder,
   triggerStopArgs,
+  type StopConfigView,
 } from "./stopVault";
 import type { PayoutSemantics } from "./vaults";
 import { LandingPage } from "./pages/LandingPage";
@@ -534,6 +536,15 @@ function App() {
   /** What must reach the wallet if it sells, in USDC. */
   const [stopMinOut, setStopMinOut] = useState("0.9000");
   const [stopHours, setStopHours] = useState("24");
+  /**
+   * The stop vault's own `Config`, once it has answered.
+   *
+   * Null covers both "not deployed" and "not read yet". The form stays usable
+   * either way: what this gates is the *pre-flight* check, and the contract
+   * enforces the same cap regardless. Showing a size limit that was never read
+   * would be worse than showing none.
+   */
+  const [stopConfig, setStopConfig] = useState<StopConfigView | null>(null);
   /** The action awaiting the signature summary the user has to read first. */
   const [pending, setPending] = useState<PendingAction | null>(null);
   /**
@@ -563,6 +574,8 @@ function App() {
   const operationLock = useRef(false);
   const observedAt = useRef(new Map<string, string>());
   const hasLoadedOrders = useRef(false);
+  /** Whether the stop vault has already answered with its configuration. */
+  const hasStopConfig = useRef(false);
 
   const location = useLocation();
   const isConsole = location.pathname.startsWith(ROUTES.console);
@@ -860,6 +873,27 @@ function App() {
     }
   };
 
+  /**
+   * Reads the stop vault's configuration once and keeps it.
+   *
+   * The cap, the pair and the policy scale have no setter, so re-reading them
+   * every cycle would be a call that can only ever return the same answer.
+   */
+  const fetchStopConfig = async (): Promise<void> => {
+    // The guard is a ref rather than the state itself: reading the state here
+    // would make every caller of this re-created on each answer, and this is
+    // called from the polling loop.
+    if (!STOP_VAULT_VERSION || hasStopConfig.current) return;
+    const raw = await simulateReadOn<Record<string, unknown>>(
+      STOP_VAULT_VERSION.id,
+      "get_config",
+    );
+    const config = toStopConfig(raw);
+    if (!config) return;
+    hasStopConfig.current = true;
+    setStopConfig(config);
+  };
+
   const refreshChain = async (): Promise<void> => {
     // Freeze background polling while a wallet operation is in flight so the
     // Freighter approval window and in-progress transaction state cannot be
@@ -878,6 +912,9 @@ function App() {
             if (quote) setOracle(quote);
           })
           .catch(() => undefined),
+        // Fixed at deployment and unchangeable, so one successful read is
+        // enough — but a failed one must not clear what was already read.
+        fetchStopConfig().catch(() => undefined),
       ]);
     } catch (error) {
       const detail = safeMessage(error) || "Chain refresh failed";
@@ -1527,14 +1564,45 @@ function App() {
 
     let stopPriceAtoms: bigint;
     let minOutStroops: bigint;
+    let amountStroops: bigint;
     try {
       stopPriceAtoms = toPriceAtoms(stopTrigger);
       minOutStroops = toStroops(stopMinOut);
+      amountStroops = toStroops(amountIn);
     } catch {
       const detail = "Trigger price or minimum payout is not a number this vault can store.";
       setMessage(detail);
       showNotice("error", "Invalid Stop Values", detail);
       return;
+    }
+
+    // The vault caps a single order and refuses anything larger. The cap is
+    // read from the contract rather than assumed, so this is only checked once
+    // the vault has answered — but when it has, failing here costs nothing,
+    // while failing on chain costs a fee and reports an error code.
+    if (stopConfig && amountStroops > stopConfig.maxAmountIn) {
+      const cap = Number(stopConfig.maxAmountIn) / STROOPS_PER_XLM;
+      const detail = `This vault accepts at most ${cap.toFixed(7)} XLM in one order.`;
+      setMessage(detail);
+      showNotice("error", "Order Too Large", detail);
+      return;
+    }
+
+    // A stop at or above the current feed price is not a stop: it would be
+    // eligible to trigger on its first reading. The contract refuses it
+    // (`StopNotBelowMarket`); saying so here lets the user re-decide against a
+    // live number instead of against a failed signature. A stale or missing
+    // quote is not treated as permission — the contract still has the final
+    // say — but it is not treated as a refusal either.
+    if (oracle && !oracle.stale && oracle.xlmPerUsdc > 0) {
+      if (numericStopTrigger >= oracle.xlmPerUsdc) {
+        const detail =
+          `The feed reads ${oracle.xlmPerUsdc.toFixed(7)} USDC / XLM. A stop has to sit ` +
+          `below the market, or it is a sell at today's price wearing a stop's name.`;
+        setMessage(detail);
+        showNotice("error", "Trigger Not Below Market", detail);
+        return;
+      }
     }
 
     // Read at submit time on purpose. A ticked clock could be a few seconds
@@ -1555,6 +1623,13 @@ function App() {
         { label: "Vault", value: `${stopVault.label} · ${shortAddress(stopVault.id, 8, 6)}` },
         { label: "Collateral", value: `${numericAmount.toFixed(7)} XLM` },
         { label: "Trigger at or below", value: `${numericStopTrigger} USDC / XLM`, emphasis: true },
+        {
+          label: "Feed reads now",
+          value:
+            oracle && !oracle.stale && oracle.xlmPerUsdc > 0
+              ? `${oracle.xlmPerUsdc.toFixed(7)} USDC / XLM`
+              : "unavailable — the vault will read it when you sign",
+        },
         { label: "Minimum to your wallet", value: `${numericStopMinOut.toFixed(7)} USDC`, emphasis: true },
         { label: "Keeper bounty", value: `${numericFeeBps} BPS (${(numericFeeBps / 100).toFixed(2)}%)` },
         { label: "Deadline", value: new Date(deadline * 1000).toLocaleString() },
@@ -1572,7 +1647,7 @@ function App() {
               owner: walletAddress,
               tokenIn,
               tokenOut,
-              amountIn: toStroops(amountIn),
+              amountIn: amountStroops,
               minUserOut: minOutStroops,
               feeBps: numericFeeBps,
               deadline,
@@ -1842,6 +1917,19 @@ function App() {
                           disabled={busy}
                           unit="XLM"
                           aside={`Spendable ${Math.max(walletBalance - 1, 0).toFixed(2)} XLM`}
+                          hint={
+                            stopConfig ? (
+                              <span>
+                                This vault accepts at most{" "}
+                                <span className="font-mono tnum text-ink-2">
+                                  {(Number(stopConfig.maxAmountIn) / STROOPS_PER_XLM).toFixed(
+                                    2,
+                                  )}
+                                </span>{" "}
+                                XLM in one order — a cap fixed at deployment.
+                              </span>
+                            ) : undefined
+                          }
                         />
 
                         <AmountField
@@ -1854,9 +1942,22 @@ function App() {
                             <span>
                               Read from the Reflector price feed, not from the pool this
                               settles against. The two can differ.
+                              {rateIsLive ? (
+                                <>
+                                  {" "}
+                                  The feed reads{" "}
+                                  <span className="font-mono tnum text-ink-2">
+                                    {oracle?.xlmPerUsdc.toFixed(7)}
+                                  </span>{" "}
+                                  right now; a stop has to sit below it.
+                                </>
+                              ) : null}
                             </span>
                           }
-                          invalid={numericStopTrigger <= 0}
+                          invalid={
+                            numericStopTrigger <= 0 ||
+                            (rateIsLive && numericStopTrigger >= xlmUsdcRate)
+                          }
                         />
 
                         <AmountField
