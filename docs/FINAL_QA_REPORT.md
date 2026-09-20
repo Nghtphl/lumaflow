@@ -108,7 +108,7 @@ Systematic pass over the deployed application's screens, states and flows. Paire
 | 3 | Medium | README stated the stop-price rule backwards, claimed only the newest vault accepts orders, and said collateral "never leaves the contract" | `d7d02e9` |
 | 4 | Low–Medium | SEP-10 challenge was not bound to the connected wallet, and `web_auth_domain` was unverified | `77723e8` |
 | 5 | Low | TOML reader's prototype safety was an accident of upper-casing | `f4d7933` |
-| 6 | Low | "Ledger Confirmation" clipped its column at 375px | `70b9bb8`, corrected in `9903c55` |
+| 6 | Low | "Ledger Confirmation" clipped its column at 375px | `70b9bb8`, corrected in `f681bef` |
 
 Detail on 4 and 5, and on why 2 and 3 are treated as security-relevant, is in
 [`SECURITY_REVIEW.md`](SECURITY_REVIEW.md).

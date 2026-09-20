@@ -354,6 +354,7 @@ never had to watch.
 | [`docs/VERIFICATION.md`](docs/VERIFICATION.md) | Every transaction, decoded event and reconciliation |
 | [`docs/SECURITY_REVIEW.md`](docs/SECURITY_REVIEW.md) | Internal security review — findings, fixes, remaining risks |
 | [`docs/FINAL_QA_REPORT.md`](docs/FINAL_QA_REPORT.md) | Screen-by-screen QA pass and its results |
+| [`docs/FINAL_REVIEW.md`](docs/FINAL_REVIEW.md) | Closing pass: what regressed, what was re-verified, what is live |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System flow and storage model |
 | [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) | Entrypoints, data structures, slippage and TTL semantics |
 | [`docs/STOP_LOSS_DESIGN_TR.md`](docs/STOP_LOSS_DESIGN_TR.md) | Stop-loss semantics, threat model, unbuilt commit–reveal / OCO designs |
