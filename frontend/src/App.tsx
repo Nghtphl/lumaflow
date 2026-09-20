@@ -45,8 +45,26 @@ import { formatUsdcPrice, limitComparator } from "./lib/price";
 import { fetchOracleQuote } from "./oracle/reflector";
 import type { OracleQuote } from "./oracle/reflector";
 import { ROUTES } from "./routes";
-import { ACTIVE_VAULT, VAULTS, orderKey } from "./vaults";
-import type { MinimumSemantics } from "./vaults";
+import {
+  ACTIVE_VAULT,
+  STOP_VAULT_VERSION,
+  VAULTS,
+  orderKey,
+  orderTypeOf,
+} from "./vaults";
+import type { OrderType } from "./vaults";
+import {
+  cancelStopArgs,
+  createStopArgs,
+  executeStopArgs,
+  fromPriceAtoms,
+  toPriceAtoms,
+  toStopConfig,
+  toStopOrder,
+  triggerStopArgs,
+  type StopConfigView,
+} from "./stopVault";
+import type { PayoutSemantics } from "./vaults";
 import { LandingPage } from "./pages/LandingPage";
 import { AppBackground } from "./components/layout/AppBackground";
 import { Footer } from "./components/layout/Footer";
@@ -108,7 +126,14 @@ const CONSOLE_SECTIONS = [
   { id: "orders", label: "Orders" },
 ] as const;
 
-type OrderStatus = "Active" | "Executed" | "Cancelled";
+/**
+ * `Active` is a limit order resting. `Armed` is a stop whose condition has not
+ * been met, and `Triggered` is one whose fall was recorded on chain but which
+ * has not sold yet. The two stop states are kept apart because they mean
+ * different things to the person holding the order: one is waiting, the other
+ * is already committed and waiting on liquidity.
+ */
+type OrderStatus = "Active" | "Armed" | "Triggered" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type ActionTab = "order" | "ramp";
 type TokenSymbol = "USDC" | "XLM";
@@ -152,14 +177,55 @@ const tokenSymbolFromContract = (contractId: string): TokenSymbol | "TOKEN" =>
       ? "XLM"
       : "TOKEN";
 
+/**
+ * An order that still holds collateral, whichever kind it is.
+ *
+ * A stop is open both before and after its trigger fires: `Triggered` means the
+ * fall was recorded, not that anything was sold. Filtering on `Active` alone
+ * would drop every triggered stop out of the queue the moment it became the
+ * most interesting order on the page.
+ */
+/**
+ * What the wallet is about to be asked to sign, in the user's terms.
+ *
+ * Every stop action goes through this. A stop has two prices, a deadline and a
+ * bounty, and three different calls that each mean something different to the
+ * collateral — offering those to Freighter without restating them first is how
+ * somebody signs the wrong one.
+ */
+interface PendingAction {
+  title: string;
+  intent: string;
+  rows: ReadonlyArray<{ label: string; value: string; emphasis?: boolean }>;
+  /** Shown above the confirm button when the call carries a caveat. */
+  caveat?: string;
+  confirmLabel: string;
+  run: () => Promise<void>;
+}
+
+const isOpen = (order: { status: OrderStatus }): boolean =>
+  order.status === "Active" ||
+  order.status === "Armed" ||
+  order.status === "Triggered";
+
 interface OrderItem {
   id: number;
   /** Which deployment this order lives in. Ids restart at 1 in each. */
   vaultId: string;
   vaultLabel: string;
-  semantics: MinimumSemantics;
+  semantics: PayoutSemantics;
+  /** What instruction this order carries. */
+  orderType: OrderType;
   /** Cancellable everywhere; only the accepting vault can still execute. */
   executable: boolean;
+  /**
+   * Stop orders only. The level the feed has to reach, at the oracle's own
+   * scale, and the ledger time after which only cancellation is open. Both are
+   * zero on a limit order, which has neither.
+   */
+  stopPrice: bigint;
+  deadline: number;
+  triggeredAt: number;
   owner: string;
   amountIn: number;
   minAmountOut: number;
@@ -275,10 +341,16 @@ async function simulateReadOn<T>(
  * Anything unrecognised — an RPC that omits the events, a shape this does not
  * know — returns null, and the order is reported without a number rather than
  * with a guessed one.
+ *
+ * `topic` names the first symbol the vault publishes under: the limit vault
+ * says `order`, the stop vault says `stop`. It is a parameter rather than an
+ * either-or so that a vault whose events this build has never seen falls
+ * through to "no number" instead of matching something by accident.
  */
 const createdOrderIdFrom = (
   result: RawTransactionStatus,
   vaultId: string,
+  topic: string = "order",
 ): number | null => {
   const perOperation = (
     result.events as { contractEventsXdr?: unknown } | undefined
@@ -297,7 +369,7 @@ const createdOrderIdFrom = (
         }
         const body = event.body().v0();
         const topics = body.topics().map((topic) => scValToNative(topic));
-        if (topics[0] !== "order" || topics[1] !== "created") continue;
+        if (topics[0] !== topic || topics[1] !== "created") continue;
         const data = scValToNative(body.data()) as unknown;
         const id = Array.isArray(data) ? Number(data[0]) : NaN;
         return Number.isSafeInteger(id) && id > 0 ? id : null;
@@ -455,6 +527,34 @@ function App() {
   // has to divide their way to the quantity.
   const [targetValue, setTargetValue] = useState("38");
   const [feeBps, setFeeBps] = useState("100");
+  /** Which instruction the form is writing. Stop is offered only when a stop
+   *  vault is configured, so the control cannot address a contract that is not
+   *  there. */
+  const [orderMode, setOrderMode] = useState<OrderType>("limit");
+  /** The level the feed has to reach, in USDC per XLM. */
+  const [stopTrigger, setStopTrigger] = useState("0.1700");
+  /** What must reach the wallet if it sells, in USDC. */
+  const [stopMinOut, setStopMinOut] = useState("0.9000");
+  const [stopHours, setStopHours] = useState("24");
+  /**
+   * The stop vault's own `Config`, once it has answered.
+   *
+   * Null covers both "not deployed" and "not read yet". The form stays usable
+   * either way: what this gates is the *pre-flight* check, and the contract
+   * enforces the same cap regardless. Showing a size limit that was never read
+   * would be worse than showing none.
+   */
+  const [stopConfig, setStopConfig] = useState<StopConfigView | null>(null);
+  /** The action awaiting the signature summary the user has to read first. */
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  /**
+   * Ledger-ish wall clock, in seconds, ticked rather than read during render.
+   *
+   * A deadline that passes while the page sits open has to move the card into
+   * its expired state on its own; reading the clock inside the render would
+   * make that depend on some unrelated state change happening to arrive.
+   */
+  const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000));
   const [tab, setTab] = useState<OrderTab>("active");
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [telemetry, setTelemetry] = useState<Telemetry>({
@@ -474,6 +574,8 @@ function App() {
   const operationLock = useRef(false);
   const observedAt = useRef(new Map<string, string>());
   const hasLoadedOrders = useRef(false);
+  /** Whether the stop vault has already answered with its configuration. */
+  const hasStopConfig = useRef(false);
 
   const location = useLocation();
   const isConsole = location.pathname.startsWith(ROUTES.console);
@@ -602,10 +704,7 @@ function App() {
   );
 
   const visibleOrders = useMemo(
-    () =>
-      safeOrders.filter((order) =>
-        tab === "active" ? order.status === "Active" : order.status !== "Active",
-      ),
+    () => safeOrders.filter((order) => (tab === "active" ? isOpen(order) : !isOpen(order))),
     [safeOrders, tab],
   );
 
@@ -613,9 +712,7 @@ function App() {
     () =>
       safeOrders
         .filter(
-          (order) =>
-            order.status === "Active" &&
-            tokenSymbolFromContract(order.tokenIn) === "USDC",
+          (order) => isOpen(order) && tokenSymbolFromContract(order.tokenIn) === "USDC",
         )
         .reduce((total, order) => total + (Number(order.amountIn) || 0), 0),
     [safeOrders],
@@ -636,6 +733,37 @@ function App() {
           "get_order",
           xdr.ScVal.scvU32(index + 1),
         );
+        const type = orderTypeOf(vault);
+        const accepting = vault.acceptingOrderTypes.length > 0;
+
+        if (type === "stop") {
+          const stop = toStopOrder(raw);
+          if (!stop) {
+            // A trigger this build does not understand. Show the order so its
+            // owner can still reach it, and claim nothing about its condition.
+            throw new Error(`Order #${index + 1} carries an unreadable trigger`);
+          }
+          return {
+            id: stop.id,
+            vaultId: vault.id,
+            vaultLabel: vault.label,
+            semantics: vault.payoutSemantics,
+            orderType: type,
+            executable: accepting,
+            owner: stop.owner,
+            tokenIn: stop.tokenIn,
+            tokenOut: stop.tokenOut,
+            amountIn: Number(stop.amountIn) / STROOPS_PER_XLM,
+            minAmountOut: Number(stop.minUserOut) / STROOPS_PER_XLM,
+            feeBps: stop.feeBps,
+            status: stop.status,
+            stopPrice: stop.stopPrice,
+            deadline: stop.deadline,
+            triggeredAt: stop.triggeredAt,
+            observedAt: null,
+          } satisfies OrderItem;
+        }
+
         const status = Number(raw.status);
         // The net-floor build renamed the field; older deployments still store
         // the gross one. `semantics` is what says which promise it carries.
@@ -644,8 +772,9 @@ function App() {
           id: Number(raw.id),
           vaultId: vault.id,
           vaultLabel: vault.label,
-          semantics: vault.semantics,
-          executable: vault.accepting,
+          semantics: vault.payoutSemantics,
+          orderType: type,
+          executable: accepting,
           owner: String(raw.owner),
           tokenIn: String(raw.token_in),
           tokenOut: String(raw.token_out),
@@ -653,6 +782,9 @@ function App() {
           minAmountOut: Number(minimum) / STROOPS_PER_XLM,
           feeBps: Number(raw.fee_bps),
           status: status === 0 ? "Active" : status === 1 ? "Executed" : "Cancelled",
+          stopPrice: 0n,
+          deadline: 0,
+          triggeredAt: 0,
           observedAt: null,
         } satisfies OrderItem;
       }),
@@ -741,6 +873,27 @@ function App() {
     }
   };
 
+  /**
+   * Reads the stop vault's configuration once and keeps it.
+   *
+   * The cap, the pair and the policy scale have no setter, so re-reading them
+   * every cycle would be a call that can only ever return the same answer.
+   */
+  const fetchStopConfig = async (): Promise<void> => {
+    // The guard is a ref rather than the state itself: reading the state here
+    // would make every caller of this re-created on each answer, and this is
+    // called from the polling loop.
+    if (!STOP_VAULT_VERSION || hasStopConfig.current) return;
+    const raw = await simulateReadOn<Record<string, unknown>>(
+      STOP_VAULT_VERSION.id,
+      "get_config",
+    );
+    const config = toStopConfig(raw);
+    if (!config) return;
+    hasStopConfig.current = true;
+    setStopConfig(config);
+  };
+
   const refreshChain = async (): Promise<void> => {
     // Freeze background polling while a wallet operation is in flight so the
     // Freighter approval window and in-progress transaction state cannot be
@@ -759,6 +912,9 @@ function App() {
             if (quote) setOracle(quote);
           })
           .catch(() => undefined),
+        // Fixed at deployment and unchangeable, so one successful read is
+        // enough — but a failed one must not clear what was already read.
+        fetchStopConfig().catch(() => undefined),
       ]);
     } catch (error) {
       const detail = safeMessage(error) || "Chain refresh failed";
@@ -768,6 +924,15 @@ function App() {
       setRefreshing(false);
     }
   };
+
+  useEffect(() => {
+    if (!isConsole) return;
+    const tick = window.setInterval(
+      () => setNowSeconds(Math.floor(Date.now() / 1000)),
+      10_000,
+    );
+    return () => window.clearInterval(tick);
+  }, [isConsole]);
 
   useEffect(() => {
     // The landing page renders no chain data, so polling the RPC every ten
@@ -1209,6 +1374,10 @@ function App() {
       return;
     }
     if (operationLock.current) return;
+    if (order.orderType === "stop") {
+      requestStopCancel(order);
+      return;
+    }
     operationLock.current = true;
     setMessage("");
     const id = order.id;
@@ -1264,6 +1433,13 @@ function App() {
     // again here; nothing settles against a version that is being wound down.
     if (!order.executable) return;
     if (operationLock.current) return;
+    // A stop settles through its own entry point and carries its own summary:
+    // the person pressing this is committing collateral to a sale at whatever
+    // the pool gives above the floor, which deserves restating first.
+    if (order.orderType === "stop") {
+      requestSettlement(order);
+      return;
+    }
     operationLock.current = true;
     setMessage("");
     const id = order.id;
@@ -1303,10 +1479,358 @@ function App() {
     }
   };
 
+  /**
+   * The one way this terminal reports a failed wallet operation.
+   *
+   * A rejected signature is not an error to retry, and a confirmation that
+   * timed out is not a failure at all — the transaction may still be in
+   * flight, so it resyncs and says so rather than telling the user something
+   * did not happen when it may have.
+   */
+  const reportOperationFailure = async (
+    error: unknown,
+    failureTitle: string,
+    fallback: string,
+  ): Promise<void> => {
+    const detail = safeMessage(error) || fallback;
+    setMessage(detail);
+    if (detail === SIGNATURE_REJECTED_MESSAGE) {
+      setLifecycle("idle");
+      showNotice("error", "Signature Rejected", "Transaction rejected by wallet.");
+      return;
+    }
+    if (detail === PENDING_CONFIRMATION_MESSAGE) {
+      setLifecycle("idle");
+      showNotice("info", "Confirmation Pending", detail);
+      if (walletAddress) {
+        await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
+      }
+      return;
+    }
+    setLifecycle("error");
+    if (detail !== WRONG_NETWORK_MESSAGE) {
+      showNotice("error", failureTitle, detail);
+    }
+  };
+
+  // ── stop orders ───────────────────────────────────────────────────────────
+
+  const numericStopTrigger = parseDecimal(stopTrigger);
+  const numericStopMinOut = parseDecimal(stopMinOut);
+  const numericStopHours = parseDecimal(stopHours);
+  const stopVault = STOP_VAULT_VERSION;
+
+  /** Runs the action the summary described, once the user has read it. */
+  const confirmPending = async (): Promise<void> => {
+    const action = pending;
+    if (!action) return;
+    setPending(null);
+    await action.run();
+  };
+
+  const submitStopOrder = (event: React.FormEvent): void => {
+    event.preventDefault();
+    if (operationLock.current || !stopVault) return;
+    setMessage("");
+    if (!walletAddress) {
+      setConnectModalOpen(true);
+      return;
+    }
+    if (numericAmount <= 0 || numericStopMinOut <= 0 || numericStopTrigger <= 0) {
+      const detail =
+        "Collateral, trigger price and minimum payout must all be greater than zero.";
+      setMessage(detail);
+      showNotice("error", "Invalid Stop Values", detail);
+      return;
+    }
+    if (numericAmount > Math.max(walletBalance - 1, 0)) {
+      const detail = `Insufficient collateral: ${Math.max(walletBalance - 1, 0).toFixed(7)} XLM is spendable. A 1 XLM reserve is excluded.`;
+      setMessage(detail);
+      showNotice("error", "Insufficient Collateral", detail);
+      return;
+    }
+    if (!Number.isInteger(numericFeeBps) || numericFeeBps < 0 || numericFeeBps > 1_000) {
+      const detail = "Keeper bounty cannot exceed 1,000 BPS (10.0%).";
+      setMessage(detail);
+      showNotice("error", "Invalid Keeper Bounty", detail);
+      return;
+    }
+    if (!(numericStopHours > 0)) {
+      const detail = "The order needs a deadline further out than now.";
+      setMessage(detail);
+      showNotice("error", "Invalid Deadline", detail);
+      return;
+    }
+
+    let stopPriceAtoms: bigint;
+    let minOutStroops: bigint;
+    let amountStroops: bigint;
+    try {
+      stopPriceAtoms = toPriceAtoms(stopTrigger);
+      minOutStroops = toStroops(stopMinOut);
+      amountStroops = toStroops(amountIn);
+    } catch {
+      const detail = "Trigger price or minimum payout is not a number this vault can store.";
+      setMessage(detail);
+      showNotice("error", "Invalid Stop Values", detail);
+      return;
+    }
+
+    // The vault caps a single order and refuses anything larger. The cap is
+    // read from the contract rather than assumed, so this is only checked once
+    // the vault has answered — but when it has, failing here costs nothing,
+    // while failing on chain costs a fee and reports an error code.
+    if (stopConfig && amountStroops > stopConfig.maxAmountIn) {
+      const cap = Number(stopConfig.maxAmountIn) / STROOPS_PER_XLM;
+      const detail = `This vault accepts at most ${cap.toFixed(7)} XLM in one order.`;
+      setMessage(detail);
+      showNotice("error", "Order Too Large", detail);
+      return;
+    }
+
+    // A stop at or above the current feed price is not a stop: it would be
+    // eligible to trigger on its first reading. The contract refuses it
+    // (`StopNotBelowMarket`); saying so here lets the user re-decide against a
+    // live number instead of against a failed signature. A stale or missing
+    // quote is not treated as permission — the contract still has the final
+    // say — but it is not treated as a refusal either.
+    if (oracle && !oracle.stale && oracle.xlmPerUsdc > 0) {
+      if (numericStopTrigger >= oracle.xlmPerUsdc) {
+        const detail =
+          `The feed reads ${oracle.xlmPerUsdc.toFixed(7)} USDC / XLM. A stop has to sit ` +
+          `below the market, or it is a sell at today's price wearing a stop's name.`;
+        setMessage(detail);
+        showNotice("error", "Trigger Not Below Market", detail);
+        return;
+      }
+    }
+
+    // Read at submit time on purpose. A ticked clock could be a few seconds
+    // behind, and a deadline computed from a stale one lands closer than the
+    // user asked — or, for a short expiry, in the past, which the contract
+    // rejects outright.
+    // oxlint-disable-next-line react/purity
+    const deadline = Math.floor(Date.now() / 1000) + Math.round(numericStopHours * 3600);
+    const tokenIn = NATIVE_XLM_SAC;
+    const tokenOut = USDC_SAC;
+
+    setPending({
+      title: "Create a stop order",
+      intent:
+        "The collateral moves into the vault now. Nothing is sold until the feed reaches your trigger.",
+      rows: [
+        { label: "Network", value: NETWORK_LABEL },
+        { label: "Vault", value: `${stopVault.label} · ${shortAddress(stopVault.id, 8, 6)}` },
+        { label: "Collateral", value: `${numericAmount.toFixed(7)} XLM` },
+        { label: "Trigger at or below", value: `${numericStopTrigger} USDC / XLM`, emphasis: true },
+        {
+          label: "Feed reads now",
+          value:
+            oracle && !oracle.stale && oracle.xlmPerUsdc > 0
+              ? `${oracle.xlmPerUsdc.toFixed(7)} USDC / XLM`
+              : "unavailable — the vault will read it when you sign",
+        },
+        { label: "Minimum to your wallet", value: `${numericStopMinOut.toFixed(7)} USDC`, emphasis: true },
+        { label: "Keeper bounty", value: `${numericFeeBps} BPS (${(numericFeeBps / 100).toFixed(2)}%)` },
+        { label: "Deadline", value: new Date(deadline * 1000).toLocaleString() },
+      ],
+      caveat:
+        "The trigger is recorded permanently. Once the feed has touched your level, the order stays sellable even if the price recovers — until you cancel it or the deadline passes. The minimum still has to be met.",
+      confirmLabel: "Sign in Freighter",
+      run: async () => {
+        operationLock.current = true;
+        try {
+          const { hash, result } = await submitContractOperation(
+            stopVault.id,
+            "create_stop_order",
+            createStopArgs({
+              owner: walletAddress,
+              tokenIn,
+              tokenOut,
+              amountIn: amountStroops,
+              minUserOut: minOutStroops,
+              feeBps: numericFeeBps,
+              deadline,
+              stopPrice: stopPriceAtoms,
+            }),
+          );
+          setLifecycle("complete");
+          const createdId = createdOrderIdFrom(result, stopVault.id, "stop");
+          await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
+          setAmountIn("");
+          const label =
+            createdId === null
+              ? "Your stop order"
+              : `Stop order ${stopVault.label}·#${createdId}`;
+          setMessage(`${label} confirmed on ledger: ${hash}`);
+          showNotice(
+            "success",
+            `${label} created on-chain`,
+            "Armed. It will not sell until the feed reaches your trigger.",
+            hash,
+          );
+        } catch (error) {
+          reportOperationFailure(error, "Stop Order Failed", "Stop order failed");
+        } finally {
+          setLifecycle((current) => (current === "running" ? "error" : current));
+          operationLock.current = false;
+        }
+      },
+    });
+  };
+
+  const requestTrigger = (order: OrderItem): void => {
+    if (!walletAddress) {
+      setConnectModalOpen(true);
+      return;
+    }
+    if (operationLock.current) return;
+    setPending({
+      title: `Record the fall on ${order.vaultLabel}·#${order.id}`,
+      intent:
+        "This writes the observation to the contract. It moves no funds and sells nothing.",
+      rows: [
+        { label: "Network", value: NETWORK_LABEL },
+        { label: "Vault", value: `${order.vaultLabel} · ${shortAddress(order.vaultId, 8, 6)}` },
+        { label: "Order", value: `#${order.id}` },
+        { label: "Trigger level", value: `${fromPriceAtoms(order.stopPrice)} USDC / XLM`, emphasis: true },
+        { label: "Collateral held", value: `${order.amountIn.toFixed(7)} XLM` },
+        { label: "Payout if it sells", value: `at least ${order.minAmountOut.toFixed(7)} USDC` },
+      ],
+      caveat:
+        "The contract reads the price itself and refuses this call if the level has not been reached. Recording it is permanent.",
+      confirmLabel: "Sign in Freighter",
+      run: async () => {
+        operationLock.current = true;
+        setMessage("");
+        try {
+          const { hash } = await submitContractOperation(
+            order.vaultId,
+            "trigger_stop",
+            triggerStopArgs(order.id, walletAddress),
+          );
+          setLifecycle("complete");
+          await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
+          setMessage(`Order #${order.id} triggered on ledger: ${hash}`);
+          showNotice(
+            "success",
+            `Order ${order.vaultLabel}·#${order.id} triggered`,
+            "The fall is on chain. Settlement is a separate step and still has to meet your minimum.",
+            hash,
+          );
+        } catch (error) {
+          reportOperationFailure(error, "Trigger Failed", "Trigger failed");
+        } finally {
+          setLifecycle((current) => (current === "running" ? "error" : current));
+          operationLock.current = false;
+        }
+      },
+    });
+  };
+
+  const requestSettlement = (order: OrderItem): void => {
+    if (!walletAddress) {
+      setConnectModalOpen(true);
+      return;
+    }
+    setPending({
+      title: `Settle ${order.vaultLabel}·#${order.id}`,
+      intent:
+        "This sells the collateral through Soroswap. It reverts unless your minimum survives the bounty.",
+      rows: [
+        { label: "Network", value: NETWORK_LABEL },
+        { label: "Vault", value: `${order.vaultLabel} · ${shortAddress(order.vaultId, 8, 6)}` },
+        { label: "Order", value: `#${order.id}` },
+        { label: "Selling", value: `${order.amountIn.toFixed(7)} XLM` },
+        { label: "Minimum to the owner", value: `${order.minAmountOut.toFixed(7)} USDC`, emphasis: true },
+        { label: "Keeper bounty", value: `${order.feeBps} BPS (${(order.feeBps / 100).toFixed(2)}%)` },
+        { label: "Bounty paid to", value: shortAddress(walletAddress, 8, 6) },
+      ],
+      caveat:
+        order.owner === walletAddress
+          ? "You own this order and are also the executor, so the bounty and the net payout both land in this wallet. They are two separate transfers; the total is not the net."
+          : undefined,
+      confirmLabel: "Sign in Freighter",
+      run: async () => {
+        operationLock.current = true;
+        setMessage("");
+        try {
+          const { hash } = await submitContractOperation(
+            order.vaultId,
+            "execute_stop",
+            executeStopArgs(order.id, walletAddress),
+          );
+          setLifecycle("complete");
+          await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
+          setMessage(`Order #${order.id} settled on ledger: ${hash}`);
+          showNotice(
+            "success",
+            `Order ${order.vaultLabel}·#${order.id} settled`,
+            "The swap cleared your minimum and the bounty was paid from realised output.",
+            hash,
+          );
+        } catch (error) {
+          await reportOperationFailure(error, "Settlement Failed", "Settlement failed");
+        } finally {
+          setLifecycle((current) => (current === "running" ? "error" : current));
+          operationLock.current = false;
+        }
+      },
+    });
+  };
+
+  const requestStopCancel = (order: OrderItem): void => {
+    if (!walletAddress) {
+      setConnectModalOpen(true);
+      return;
+    }
+    setPending({
+      title: `Cancel ${order.vaultLabel}·#${order.id}`,
+      intent: "The whole collateral returns to your wallet. Nothing is swapped.",
+      rows: [
+        { label: "Network", value: NETWORK_LABEL },
+        { label: "Vault", value: `${order.vaultLabel} · ${shortAddress(order.vaultId, 8, 6)}` },
+        { label: "Order", value: `#${order.id}` },
+        { label: "Returned to you", value: `${order.amountIn.toFixed(7)} XLM`, emphasis: true },
+        { label: "Status now", value: order.status },
+      ],
+      caveat:
+        "Cancellation reads no price and calls no router, so it works even when the feed is down. The network fee is charged separately and is not taken out of the refund.",
+      confirmLabel: "Sign in Freighter",
+      run: async () => {
+        operationLock.current = true;
+        setMessage("");
+        try {
+          const { hash } = await submitContractOperation(
+            order.vaultId,
+            "cancel_order",
+            cancelStopArgs(order.id),
+          );
+          setLifecycle("complete");
+          await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
+          setMessage(
+            `Cancellation confirmed: ${hash} | Reclaimed ${order.amountIn.toFixed(7)} XLM`,
+          );
+          showNotice(
+            "success",
+            `Order ${order.vaultLabel}·#${order.id} cancelled`,
+            `${order.amountIn.toFixed(7)} XLM returned to your wallet`,
+            hash,
+          );
+        } catch (error) {
+          await reportOperationFailure(error, "Cancellation Failed", "Cancellation failed");
+        } finally {
+          setLifecycle((current) => (current === "running" ? "error" : current));
+          operationLock.current = false;
+        }
+      },
+    });
+  };
+
   const busy = lifecycle === "running";
   const connected = Boolean(walletAddress);
   const contractUrl = `${EXPLORER_BASE}/contract/${ACTIVE_VAULT.id}`;
-  const activeCount = safeOrders.filter((order) => order.status === "Active").length;
+  const activeCount = safeOrders.filter(isOpen).length;
   const historyCount = safeOrders.length - activeCount;
   const scrollToConsole = (): void => {
     document
@@ -1370,6 +1894,130 @@ function App() {
                     className={actionTab === "order" ? "block" : "hidden"}
                     aria-hidden={actionTab !== "order"}
                   >
+                    {stopVault ? (
+                      <Segmented
+                        options={[
+                          { id: "limit", label: "Limit" },
+                          { id: "stop", label: "Stop-loss" },
+                        ]}
+                        value={orderMode}
+                        onChange={setOrderMode}
+                        ariaLabel="Order type"
+                        size="sm"
+                        className="mb-4"
+                      />
+                    ) : null}
+
+                    {stopVault && orderMode === "stop" ? (
+                      <form onSubmit={submitStopOrder} className="space-y-4">
+                        <AmountField
+                          label="You deposit"
+                          value={amountIn}
+                          onChange={setAmountIn}
+                          disabled={busy}
+                          unit="XLM"
+                          aside={`Spendable ${Math.max(walletBalance - 1, 0).toFixed(2)} XLM`}
+                          hint={
+                            stopConfig ? (
+                              <span>
+                                This vault accepts at most{" "}
+                                <span className="font-mono tnum text-ink-2">
+                                  {(Number(stopConfig.maxAmountIn) / STROOPS_PER_XLM).toFixed(
+                                    2,
+                                  )}
+                                </span>{" "}
+                                XLM in one order — a cap fixed at deployment.
+                              </span>
+                            ) : undefined
+                          }
+                        />
+
+                        <AmountField
+                          label="Sell if the price falls to"
+                          value={stopTrigger}
+                          onChange={setStopTrigger}
+                          disabled={busy}
+                          unit="USDC / XLM"
+                          hint={
+                            <span>
+                              Read from the Reflector price feed, not from the pool this
+                              settles against. The two can differ.
+                              {rateIsLive ? (
+                                <>
+                                  {" "}
+                                  The feed reads{" "}
+                                  <span className="font-mono tnum text-ink-2">
+                                    {oracle?.xlmPerUsdc.toFixed(7)}
+                                  </span>{" "}
+                                  right now; a stop has to sit below it.
+                                </>
+                              ) : null}
+                            </span>
+                          }
+                          invalid={
+                            numericStopTrigger <= 0 ||
+                            (rateIsLive && numericStopTrigger >= xlmUsdcRate)
+                          }
+                        />
+
+                        <AmountField
+                          label="Minimum that must reach your wallet"
+                          value={stopMinOut}
+                          onChange={setStopMinOut}
+                          disabled={busy}
+                          unit="USDC"
+                          hint={
+                            <span>
+                              Checked after the keeper bounty. If a fill cannot clear it,
+                              the sale is refused and the order stays triggered.
+                            </span>
+                          }
+                          invalid={numericStopMinOut <= 0}
+                        />
+
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <AmountField
+                            label="Keeper bounty"
+                            unit="BPS"
+                            value={feeBps}
+                            onChange={setFeeBps}
+                            disabled={busy}
+                            compact
+                            invalid={
+                              !Number.isInteger(numericFeeBps) ||
+                              numericFeeBps < 0 ||
+                              numericFeeBps > 1_000
+                            }
+                          />
+                          <AmountField
+                            label="Expires in"
+                            unit="hours"
+                            value={stopHours}
+                            onChange={setStopHours}
+                            disabled={busy}
+                            compact
+                            invalid={!(numericStopHours > 0)}
+                          />
+                        </div>
+
+                        <Button
+                          type="submit"
+                          variant="primary"
+                          size="lg"
+                          block
+                          loading={busy}
+                          icon={<Zap className="size-4" strokeWidth={2} aria-hidden="true" />}
+                        >
+                          {busy ? "Settling on ledger" : "Create stop order"}
+                        </Button>
+
+                        <p className="text-center text-caption leading-relaxed text-ink-4">
+                          The trigger is recorded permanently. Once the feed touches your
+                          level the order stays sellable even if the price recovers, until
+                          you cancel it or it expires.
+                        </p>
+                      </form>
+                    ) : (
                     <form onSubmit={submitOrder} className="space-y-4">
                       <AmountField
                         label="You deposit"
@@ -1472,6 +2120,7 @@ function App() {
                         cannot settle below it.
                       </p>
                     </form>
+                    )}
                   </div>
 
                   <div
@@ -1747,9 +2396,24 @@ function App() {
                     unfillableReason={unfillableReason(order.tokenIn, order.tokenOut)}
                     isOwn={connected && order.owner === walletAddress}
                     canCancel={!connected || order.owner === walletAddress}
+                    orderType={order.orderType}
+                    stopPriceLabel={
+                      order.orderType === "stop" ? fromPriceAtoms(order.stopPrice) : null
+                    }
+                    deadlineLabel={
+                      order.orderType === "stop" && order.deadline > 0
+                        ? new Date(order.deadline * 1000).toLocaleString()
+                        : null
+                    }
+                    expired={
+                      order.orderType === "stop" &&
+                      order.deadline > 0 &&
+                      nowSeconds >= order.deadline
+                    }
                     busy={busy}
                     onCancel={() => void cancelOrder(order)}
                     onExecute={() => void executeOrder(order)}
+                    onTrigger={() => requestTrigger(order)}
                   />
                 );
               })}
@@ -1846,6 +2510,62 @@ function App() {
         networkLabel={NETWORK_LABEL}
         shortAddress={(value) => shortAddress(value, 8, 6)}
       />
+
+      {/*
+        Every stop action restates itself before the wallet opens. Freighter
+        shows a contract address and an encoded call; this shows what the call
+        does to the collateral, which is the part the person is actually
+        deciding about.
+      */}
+      <Modal
+        open={pending !== null}
+        onClose={() => setPending(null)}
+        title={pending?.title ?? "Confirm"}
+        description={pending?.intent}
+        footer={
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+            <Button size="sm" onClick={() => setPending(null)} disabled={busy}>
+              Back
+            </Button>
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => void confirmPending()}
+              loading={busy}
+            >
+              {pending?.confirmLabel ?? "Sign in Freighter"}
+            </Button>
+          </div>
+        }
+      >
+        {pending ? (
+          <div className="space-y-4">
+            <dl className="divide-y divide-line rounded-md border border-line">
+              {pending.rows.map((row) => (
+                <div
+                  key={row.label}
+                  className="flex items-baseline justify-between gap-4 px-3 py-2.5"
+                >
+                  <dt className="shrink-0 text-footnote text-ink-3">{row.label}</dt>
+                  <dd
+                    className={cn(
+                      "min-w-0 truncate text-right font-mono text-footnote tnum",
+                      row.emphasis ? "text-ink" : "text-ink-2",
+                    )}
+                  >
+                    {row.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            {pending.caveat ? (
+              <p className="rounded-md border border-line bg-surface-2 p-3 text-caption leading-relaxed text-ink-3">
+                {pending.caveat}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal
         open={connectModalOpen}

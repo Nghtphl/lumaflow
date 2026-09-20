@@ -11,6 +11,9 @@
  * An entry is never removed while it holds an active order.
  */
 
+/** The only network this build talks to. Part of every order's identity. */
+export const NETWORK = "testnet";
+
 /**
  * What an order's stored minimum promises.
  *
@@ -18,25 +21,41 @@
  * the owner receives less than the figure recorded. `net` guards the transfer
  * the owner actually receives. The distinction is the reason both are named
  * here rather than assumed.
+ *
+ * This says nothing about *when* an order may settle. A stop is not a third
+ * payout semantics — it is a different trigger over the same payout promise —
+ * so it lives in `capabilities`, not here.
  */
-export type MinimumSemantics = "gross" | "net";
+export type PayoutSemantics = "gross" | "net";
+
+/** What kind of instruction an order carries. */
+export type OrderType = "limit" | "stop";
 
 export interface VaultVersion {
   id: string;
   /** Short name used in the UI and in order identifiers. */
   label: string;
-  semantics: MinimumSemantics;
+  /** Monotonic across deployments. V0 is 0. */
+  version: number;
+  payoutSemantics: PayoutSemantics;
+  /** Order types this deployment can hold at all — including ones it no
+   *  longer accepts but still has to display and cancel. */
+  capabilities: ReadonlyArray<OrderType>;
   /**
-   * Only one vault accepts new orders. The others are read-and-cancel: their
-   * owners can always reclaim, but nothing new is written to them.
+   * Order types this deployment still accepts. Empty means read-and-cancel:
+   * its owners can always reclaim, but nothing new is written to it.
+   *
+   * Deliberately separate from `capabilities`: "the newest contract accepts
+   * everything" is the assumption that orphaned V0's orders, and the limit
+   * vault staying open is not the same decision as retiring an older one.
    */
-  accepting: boolean;
+  acceptingOrderTypes: ReadonlyArray<OrderType>;
   /** Why this version is still listed, in the user's words. */
   note: string;
 }
 
-/** The vault this build was cut against. */
-const ACTIVE_VAULT_ID = "CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT";
+/** The limit vault this build was cut against. */
+const ACTIVE_LIMIT_VAULT_ID = "CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT";
 
 /** Vaults that have been superseded. Listed below with their own semantics. */
 const RETIRED_VAULT_IDS = [
@@ -53,7 +72,7 @@ const RETIRED_VAULT_IDS = [
  * unrecognised id is still honoured, because that is how a new deployment is
  * pointed at before this file knows about it.
  */
-const CONFIGURED_ACTIVE = ((): string | undefined => {
+const CONFIGURED_LIMIT_VAULT = ((): string | undefined => {
   const configured = (
     import.meta.env.VITE_VAULT_CONTRACT_ID as string | undefined
   )?.trim();
@@ -62,42 +81,93 @@ const CONFIGURED_ACTIVE = ((): string | undefined => {
 })();
 
 /**
- * Newest first. The accepting vault leads because it is the one being used;
- * the rest are history that still has money in it.
+ * The stop vault, when one has been deployed.
+ *
+ * There is no fallback constant on purpose. A stop vault that does not exist
+ * yet must leave the console showing limit orders only, rather than offering a
+ * form whose transactions would be addressed to nothing. Phase 3 fills this in;
+ * until then the absence is the honest state.
+ */
+const CONFIGURED_STOP_VAULT = ((): string | undefined => {
+  const configured = (
+    import.meta.env.VITE_STOP_VAULT_CONTRACT_ID as string | undefined
+  )?.trim();
+  if (!configured || RETIRED_VAULT_IDS.includes(configured)) return undefined;
+  return configured;
+})();
+
+const STOP_VAULT: VaultVersion | null = CONFIGURED_STOP_VAULT
+  ? {
+      id: CONFIGURED_STOP_VAULT,
+      label: "V3",
+      version: 3,
+      payoutSemantics: "net",
+      capabilities: ["stop"],
+      acceptingOrderTypes: ["stop"],
+      note: "Stop-loss vault. Its minimum guards what reaches your wallet, and its trigger is read from a price feed rather than from the pool it settles against.",
+    }
+  : null;
+
+/**
+ * Newest first. The vaults that accept orders lead because they are the ones
+ * being used; the rest are history that still has money in it.
  */
 export const VAULTS: ReadonlyArray<VaultVersion> = [
+  ...(STOP_VAULT ? [STOP_VAULT] : []),
   {
-    id: CONFIGURED_ACTIVE || ACTIVE_VAULT_ID,
+    id: CONFIGURED_LIMIT_VAULT || ACTIVE_LIMIT_VAULT_ID,
     label: "V2",
-    semantics: "net",
-    accepting: true,
-    note: "Current vault. Its minimum guards what reaches your wallet: the keeper bounty is taken before the figure you set, not out of it.",
+    version: 2,
+    payoutSemantics: "net",
+    capabilities: ["limit"],
+    acceptingOrderTypes: ["limit"],
+    note: "Current limit vault. Its minimum guards what reaches your wallet: the keeper bounty is taken before the figure you set, not out of it.",
   },
   {
     id: "CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD",
     label: "V1",
-    semantics: "gross",
-    accepting: false,
+    version: 1,
+    payoutSemantics: "gross",
+    capabilities: ["limit"],
+    acceptingOrderTypes: [],
     note: "Earlier vault, no longer used for new orders. Its minimum guarded the swap output, so the bounty came out of what you received. Orders here can still be cancelled by their owner.",
   },
   {
     id: "CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB",
     label: "V0",
-    semantics: "gross",
-    accepting: false,
+    version: 0,
+    payoutSemantics: "gross",
+    capabilities: ["limit"],
+    acceptingOrderTypes: [],
     note: "Earlier vault, no longer used for new orders. Orders here can still be cancelled by their owner.",
   },
 ];
 
+/** The vault that takes new orders of this type, or null when none does. */
+export const vaultAccepting = (type: OrderType): VaultVersion | null =>
+  VAULTS.find((vault) => vault.acceptingOrderTypes.includes(type)) ?? null;
+
+/** The limit vault. Never null: this build always ships one. */
 export const ACTIVE_VAULT: VaultVersion =
-  VAULTS.find((vault) => vault.accepting) ?? VAULTS[0];
+  vaultAccepting("limit") ?? VAULTS[VAULTS.length - 1];
+
+/** The stop vault, or null until one is deployed and configured. */
+export const STOP_VAULT_VERSION: VaultVersion | null = vaultAccepting("stop");
 
 export const vaultById = (id: string): VaultVersion | undefined =>
   VAULTS.find((vault) => vault.id === id);
 
+/** Which order type a vault's orders are, for reading and display. */
+export const orderTypeOf = (vault: VaultVersion): OrderType =>
+  vault.capabilities.includes("stop") ? "stop" : "limit";
+
 /**
- * Order ids restart at 1 in every deployment, so an id alone names three
- * different orders. Anything that stores, compares or keys an order uses this.
+ * Order ids restart at 1 in every deployment, so an id alone names several
+ * different orders, and a contract id is only unique within one network.
+ * Anything that stores, compares or keys an order uses this.
  */
-export const orderKey = (vaultId: string, orderId: number): string =>
-  `${vaultId}:${orderId}`;
+export const orderKey = (
+  vaultId: string,
+  orderId: number,
+  network: string = NETWORK,
+): string => `${network}:${vaultId}:${orderId}`;

@@ -23,6 +23,12 @@ const requiredEnv = (name: string): string => {
 
 const RPC_URL = requiredEnv("RPC_URL");
 const VAULT_CONTRACT_ID = requiredEnv("VAULT_CONTRACT_ID");
+/**
+ * The stop vault, when one has been deployed. Optional on purpose: a keeper
+ * pointed at a stop vault that does not exist would log a failure every poll
+ * and teach its operator to ignore the log.
+ */
+const STOP_VAULT_CONTRACT_ID = process.env.STOP_VAULT_CONTRACT_ID?.trim();
 const KEEPER_SECRET_KEY = process.env.KEEPER_SECRET_KEY?.trim();
 const NETWORK_PASSPHRASE =
   process.env.NETWORK_PASSPHRASE?.trim() || Networks.TESTNET;
@@ -43,6 +49,18 @@ type VaultOrder = {
   status: number;
 };
 
+/** `StopOrder` as the V3 contract returns it. */
+type StopVaultOrder = VaultOrder & {
+  deadline: bigint;
+  /** `["PublicStopBelow", <price at feed scale>]`. */
+  trigger: [string, bigint];
+  policy_version: number;
+};
+
+/** Mirrors `StopStatus`. */
+const STOP_ARMED = 0;
+const STOP_TRIGGERED = 1;
+
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -52,6 +70,9 @@ const errorText = (error: unknown): string =>
 class TriggerVaultKeeper {
   private readonly server = new rpc.Server(RPC_URL);
   private readonly vault = new Contract(VAULT_CONTRACT_ID);
+  private readonly stopVault = STOP_VAULT_CONTRACT_ID
+    ? new Contract(STOP_VAULT_CONTRACT_ID)
+    : null;
   private readonly keypair = KEEPER_SECRET_KEY
     ? Keypair.fromSecret(KEEPER_SECRET_KEY)
     : null;
@@ -60,6 +81,11 @@ class TriggerVaultKeeper {
   async start(): Promise<void> {
     await this.verifyConnection();
     console.log(`TriggerVault keeper started: ${VAULT_CONTRACT_ID}`);
+    console.log(
+      this.stopVault
+        ? `Stop vault: ${STOP_VAULT_CONTRACT_ID}`
+        : "Stop vault: not configured (STOP_VAULT_CONTRACT_ID unset)",
+    );
     console.log(
       this.keypair
         ? `Execution mode: ${this.keypair.publicKey()}`
@@ -71,6 +97,11 @@ class TriggerVaultKeeper {
         await this.scanOrders();
       } catch (error) {
         console.error(`Scan failed: ${errorText(error)}`);
+      }
+      try {
+        if (this.running) await this.scanStopOrders();
+      } catch (error) {
+        console.error(`Stop scan failed: ${errorText(error)}`);
       }
       if (this.running) await delay(POLL_INTERVAL_MS);
     }
@@ -96,12 +127,20 @@ class TriggerVaultKeeper {
     method: string,
     ...args: xdr.ScVal[]
   ): Promise<T> {
+    return this.readOn<T>(this.vault, method, ...args);
+  }
+
+  private async readOn<T>(
+    contract: Contract,
+    method: string,
+    ...args: xdr.ScVal[]
+  ): Promise<T> {
     const source = new Account(READ_ONLY_SOURCE, "0");
     const transaction = new TransactionBuilder(source, {
       fee: BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
     })
-      .addOperation(this.vault.call(method, ...args))
+      .addOperation(contract.call(method, ...args))
       .setTimeout(30)
       .build();
 
@@ -185,6 +224,136 @@ class TriggerVaultKeeper {
       }
     } catch (error) {
       console.log(`Order #${order.id} not executable: ${errorText(error)}`);
+    }
+  }
+
+  /**
+   * One pass over the stop vault.
+   *
+   * Armed orders are checked against the price the *contract* computes, not
+   * against a rate this process derives: the keeper's job is to avoid pointless
+   * calls, and a second opinion about the price would only create a second way
+   * to be wrong. Triggered orders are handed to simulation, which refuses the
+   * ones the pool cannot fill.
+   */
+  private async scanStopOrders(): Promise<void> {
+    const stopVault = this.stopVault;
+    if (!stopVault) return;
+
+    const count = await this.readOn<number>(stopVault, "get_order_count");
+    if (!Number.isSafeInteger(count) || count < 0) {
+      console.error(`Stop vault returned an unusable order count: ${count}`);
+      return;
+    }
+
+    let price: bigint | null = null;
+    try {
+      price = await this.readOn<bigint>(stopVault, "current_price");
+    } catch (error) {
+      // A feed that cannot be read blocks triggering, but not the pass: the
+      // orders already triggered can still be settled.
+      console.error(`Stop vault price unavailable: ${errorText(error)}`);
+    }
+
+    const now = BigInt(Math.floor(Date.now() / 1000));
+
+    for (let orderId = 1; orderId <= count && this.running; orderId += 1) {
+      try {
+        const order = await this.readOn<StopVaultOrder>(
+          stopVault,
+          "get_order",
+          xdr.ScVal.scvU32(orderId),
+        );
+        if (order.status !== STOP_ARMED && order.status !== STOP_TRIGGERED) {
+          continue;
+        }
+        if (order.deadline !== undefined && now >= order.deadline) {
+          // Past its deadline the contract refuses both calls. Only the owner
+          // can act now, and the keeper is not the owner.
+          continue;
+        }
+
+        if (order.status === STOP_TRIGGERED) {
+          console.log(`Stop order #${order.id} triggered, attempting settlement`);
+          if (this.keypair) {
+            await this.submit(stopVault, "execute_stop", [
+              xdr.ScVal.scvU32(order.id),
+              Address.fromString(this.keypair.publicKey()).toScVal(),
+            ], `Stop order #${order.id} execute`);
+          }
+          continue;
+        }
+
+        const stopPrice = Array.isArray(order.trigger) ? order.trigger[1] : null;
+        if (stopPrice === null || stopPrice === undefined) {
+          console.error(
+            `Stop order #${order.id} carries a trigger this keeper does not ` +
+              `understand; leaving it alone.`,
+          );
+          continue;
+        }
+        if (price === null) continue;
+        if (price > stopPrice) continue;
+
+        console.log(
+          `Stop order #${order.id} | price=${price} <= stop=${stopPrice} | recording the fall`,
+        );
+        if (this.keypair) {
+          await this.submit(stopVault, "trigger_stop", [
+            xdr.ScVal.scvU32(order.id),
+            Address.fromString(this.keypair.publicKey()).toScVal(),
+          ], `Stop order #${order.id} trigger`);
+        }
+      } catch (error) {
+        console.error(`Stop order #${orderId} read failed: ${errorText(error)}`);
+      }
+    }
+  }
+
+  /**
+   * Simulate, sign, send, and wait for one call.
+   *
+   * A simulation that fails ends the attempt quietly: for a stop that usually
+   * means the pool cannot meet the floor, which is the contract protecting the
+   * owner rather than an error to retry against.
+   */
+  private async submit(
+    contract: Contract,
+    method: string,
+    args: xdr.ScVal[],
+    label: string,
+  ): Promise<void> {
+    const keypair = this.keypair;
+    if (!keypair) return;
+
+    try {
+      const source = await this.server.getAccount(keypair.publicKey());
+      const transaction = new TransactionBuilder(source, {
+        fee: BASE_FEE,
+        networkPassphrase: NETWORK_PASSPHRASE,
+      })
+        .addOperation(contract.call(method, ...args))
+        .setTimeout(60)
+        .build();
+
+      const simulation = await this.server.simulateTransaction(transaction);
+      if (!rpc.Api.isSimulationSuccess(simulation)) {
+        console.log(`${label}: not possible yet`);
+        return;
+      }
+
+      const prepared = rpc.assembleTransaction(transaction, simulation).build();
+      prepared.sign(keypair);
+      const submission = await this.send(prepared);
+      const result = await this.waitForConfirmation(submission.hash);
+
+      if (result.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+        console.log(`${label}: ${submission.hash}`);
+      } else {
+        console.error(`${label} failed: ${submission.hash}`);
+      }
+    } catch (error) {
+      console.log(`${label} skipped: ${errorText(error)}`);
     }
   }
 
