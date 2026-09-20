@@ -41,6 +41,8 @@ import {
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { cn } from "./lib/cn";
 import { formatUsdcPrice, limitComparator } from "./lib/price";
+import { fetchOracleQuote } from "./oracle/reflector";
+import type { OracleQuote } from "./oracle/reflector";
 import { ROUTES } from "./routes";
 import { LandingPage } from "./pages/LandingPage";
 import { AppBackground } from "./components/layout/AppBackground";
@@ -79,7 +81,14 @@ const STROOPS_PER_XLM = 10_000_000;
  * reference, not a market rate. The field's footnote states it for that reason:
  * an order priced off a stale constant should say so on its face.
  */
-const REFERENCE_XLM_USD = 0.2632;
+/**
+ * Last-resort price for one XLM in USDC, used only until Reflector answers. It
+ * is deliberately conservative to look at rather than plausible: a stale
+ * constant that reads like a real quote is how an order gets priced off a
+ * number nobody checked. The live feed read 0.1906 when this was written,
+ * against the 0.2632 that used to sit here hardcoded.
+ */
+const FALLBACK_XLM_USDC = 0.19;
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const NATIVE_XLM_SAC =
   "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
@@ -378,6 +387,7 @@ function App() {
   // lets the order form talk in lira instead of asking the user to think in
   // stablecoin ratios.
   const [tryPerUsdc, setTryPerUsdc] = useState(0);
+  const [oracle, setOracle] = useState<OracleQuote | null>(null);
   const [rateSource, setRateSource] = useState("");
   const [depositToken, setDepositToken] = useState<TokenSymbol>("USDC");
   const [targetToken, setTargetToken] = useState<TokenSymbol>("XLM");
@@ -447,6 +457,14 @@ function App() {
   const numericAmount = parseDecimal(amountIn);
   const numericMinOut = parseDecimal(minAmountOut);
   const numericTarget = parseDecimal(targetValue);
+  // Reflector when it is fresh, the fallback only until it answers. `stale`
+  // is surfaced rather than silently tolerated: an order priced off a feed
+  // that stopped publishing is the failure this whole path exists to avoid.
+  const xlmUsdcRate =
+    oracle && !oracle.stale && oracle.xlmPerUsdc > 0
+      ? oracle.xlmPerUsdc
+      : FALLBACK_XLM_USDC;
+  const rateIsLive = Boolean(oracle && !oracle.stale && oracle.xlmPerUsdc > 0);
   const numericFeeBps = parseDecimal(feeBps);
   // execute_order swaps all collateral; the keeper receives this percentage
   // of the realized output. The output amount is unknown until execution.
@@ -506,9 +524,10 @@ function App() {
         <>
           Total target amount to receive in USD value. Settles for at least{" "}
           <span className="font-mono tnum text-ink-2">
-            {(numericTarget / REFERENCE_XLM_USD).toFixed(2)}
+            {(numericTarget / xlmUsdcRate).toFixed(2)}
           </span>{" "}
-          XLM on-chain, valuing XLM at {REFERENCE_XLM_USD} USD.
+          XLM on-chain, valuing XLM at {xlmUsdcRate.toFixed(4)} USDC{" "}
+          {rateIsLive ? "from Reflector" : "(fallback — feed unavailable)"}.
         </>
       )}
     </span>
@@ -634,7 +653,17 @@ function App() {
     setRefreshing(true);
     setMessage("");
     try {
-      await Promise.all([fetchTelemetry(), fetchOrders()]);
+      await Promise.all([
+        fetchTelemetry(),
+        fetchOrders(),
+        // A failed or stale read must leave the last good quote alone rather
+        // than snapping the form back to the fallback mid-edit.
+        fetchOracleQuote(server)
+          .then((quote) => {
+            if (quote) setOracle(quote);
+          })
+          .catch(() => undefined),
+      ]);
     } catch (error) {
       const detail = safeMessage(error) || "Chain refresh failed";
       setMessage(detail);
@@ -826,7 +855,7 @@ function App() {
     }
     // Buying: a dollar target, divided by the reference into lumens. It does
     // not depend on the deposit — the target is the whole statement.
-    const minOut = entered / REFERENCE_XLM_USD;
+    const minOut = entered / xlmUsdcRate;
     return Number.isFinite(minOut) && minOut > 0 ? minOut.toFixed(7) : null;
   };
 
@@ -855,7 +884,7 @@ function App() {
     // would now come back.
     if (triggerIsPrice) {
       // Becoming the buy leg: `amountIn` is the XLM that will settle.
-      const asUsd = parseDecimal(amountIn) * REFERENCE_XLM_USD;
+      const asUsd = parseDecimal(amountIn) * xlmUsdcRate;
       if (asUsd > 0) setTargetValue(asUsd.toFixed(2));
     } else if (effectivePrice > 0) {
       setTargetValue(effectivePrice.toFixed(7));
