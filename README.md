@@ -7,7 +7,7 @@ funded and cashed out in Turkish lira.**
 
 [![Network](https://img.shields.io/badge/network-Stellar%20Testnet-1f6feb)](https://stellar.expert/explorer/testnet)
 [![Contracts](https://img.shields.io/badge/contracts-V2%20limit%20%C2%B7%20V3%20stop-30363d)](docs/VERIFICATION.md)
-[![Tests](https://img.shields.io/badge/contract%20tests-17%20%2B%2034-238636)](docs/VERIFICATION.md#4-automated-tests)
+[![Tests](https://img.shields.io/badge/tests-51%20contract%20%C2%B7%2023%20frontend-238636)](docs/FINAL_QA_REPORT.md#3-automated-results)
 [![Audit](https://img.shields.io/badge/audit-none-8b5cf6)](SECURITY.md)
 
 [**▶ Live demo**](https://lumaflovv.vercel.app) · [**GitHub**](https://github.com/Nghtphl/lumaflow) · [Verification record](docs/VERIFICATION.md)
@@ -287,7 +287,10 @@ without taking the input, both fail — each has its own regression test.
 - **The anchor is a sandbox.** Moving to a production anchor is a configuration change on our
   side, but it is gated on that provider's KYC requirements, supported rails and commercial
   onboarding.
-- **Not audited. Testnet only.**
+- **Not audited. Testnet only.** An internal security review was carried out against this
+  code — findings, fixes and the risks it leaves open are in
+  [`docs/SECURITY_REVIEW.md`](docs/SECURITY_REVIEW.md). It is not an audit and does not
+  certify the system.
 
 **Planned, not implemented:** commit–reveal sealed stop levels, and OCO / bracket orders
 sharing one collateral. Designed in
@@ -349,6 +352,8 @@ never had to watch.
 | Document | Contents |
 | --- | --- |
 | [`docs/VERIFICATION.md`](docs/VERIFICATION.md) | Every transaction, decoded event and reconciliation |
+| [`docs/SECURITY_REVIEW.md`](docs/SECURITY_REVIEW.md) | Internal security review — findings, fixes, remaining risks |
+| [`docs/FINAL_QA_REPORT.md`](docs/FINAL_QA_REPORT.md) | Screen-by-screen QA pass and its results |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System flow and storage model |
 | [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) | Entrypoints, data structures, slippage and TTL semantics |
 | [`docs/STOP_LOSS_DESIGN_TR.md`](docs/STOP_LOSS_DESIGN_TR.md) | Stop-loss semantics, threat model, unbuilt commit–reveal / OCO designs |
