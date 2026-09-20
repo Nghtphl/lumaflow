@@ -3,6 +3,8 @@ import type { ErrorInfo, ReactNode } from "react";
 import {
   ArrowDownUp,
   ArrowUpRight,
+  Check,
+  ChevronDown,
   CircleAlert,
   Coins,
   Info,
@@ -51,6 +53,7 @@ import { AmountField } from "./components/ui/AmountField";
 import { Button, IconButton } from "./components/ui/Button";
 import { buttonStyles } from "./components/ui/buttonStyles";
 import { Card, CardHeader, SectionLabel } from "./components/ui/Card";
+import { Menu, MenuItem } from "./components/ui/Menu";
 import { EmptyState } from "./components/ui/EmptyState";
 import { Modal } from "./components/ui/Modal";
 import { Reveal } from "./components/ui/Reveal";
@@ -96,7 +99,13 @@ type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type ActionTab = "order" | "ramp";
 type TokenSymbol = "USDC" | "XLM";
-type PriceUnit = "USDC" | "TRY";
+/**
+ * The three ways to say the same limit. A trigger is naturally a rate when you
+ * are watching an asset ("sell at 9.40") and naturally a total when you are
+ * watching a position ("out at 25 dollars"); both land on the one
+ * `min_amount_out` the contract is given.
+ */
+type TargetMode = "priceUsdc" | "priceTry" | "total";
 type LifecycleState = "idle" | "running" | "complete" | "error";
 
 const TOKEN_OPTIONS: ReadonlyArray<{
@@ -376,12 +385,11 @@ function App() {
   const [targetToken, setTargetToken] = useState<TokenSymbol>("XLM");
   const [amountIn, setAmountIn] = useState("10");
   const [minAmountOut, setMinAmountOut] = useState("38");
-  // A limit order is a price, but the contract is given a quantity. The two
-  // fields are the same statement said two ways: `minAmountOut` stays the only
-  // figure that reaches the chain, and this one exists so nobody has to divide
-  // their way to it.
-  const [limitPrice, setLimitPrice] = useState((10 / 38).toFixed(7));
-  const [priceUnit, setPriceUnit] = useState<PriceUnit>("USDC");
+  // `minAmountOut` stays the only figure that reaches the chain. This is how
+  // the trigger is *said* — a rate or a total, in dollars or lira — so nobody
+  // has to divide their way to the quantity.
+  const [targetValue, setTargetValue] = useState((10 / 38).toFixed(7));
+  const [targetMode, setTargetMode] = useState<TargetMode>("priceUsdc");
   const [feeBps, setFeeBps] = useState("100");
   const [tab, setTab] = useState<OrderTab>("active");
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -473,27 +481,45 @@ function App() {
       : `≈ ${(numericAmount * triggerPriceTry).toFixed(2)} TRY at target`
     : undefined;
   const comparator = limitComparator(depositToken);
-  // The limit is denominated in the target asset, but the collateral is priced
-  // in dollars — quoting only TRY leaves the user converting USDC → XLM by
-  // hand. `effectivePrice` is already USDC per XLM in both directions.
-  //
-  // Stated as a bare unit price this reads backwards: raising the minimum is
-  // asking for a better rate, so the figure falls, which looks like the
-  // position shrinking. Phrasing it as the fill condition makes the direction
-  // the point rather than a surprise.
-  const targetFiatValue = effectivePrice > 0
-    ? `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`
-    : undefined;
-  // The price field states the limit in one unit; the hint carries the other,
-  // so neither reading has to be worked out on paper.
-  const priceHint =
+
+  // The three readings of one trigger. A rate answers "at what price", a total
+  // answers "for how much" — the same order either way.
+  const targetModes: ReadonlyArray<{ id: TargetMode; label: string; note: string }> = [
+    {
+      id: "priceUsdc",
+      label: "USDC / XLM",
+      note: "Settle at this dollar price",
+    },
+    ...(tryPerUsdc > 0
+      ? [
+          {
+            id: "priceTry" as TargetMode,
+            label: "TRY / XLM",
+            note: "Settle at this lira price",
+          },
+        ]
+      : []),
+    {
+      id: "total",
+      label: `${targetToken} total`,
+      note: `Settle once this much ${targetToken} comes back`,
+    },
+  ];
+  const activeTargetMode =
+    targetModes.find((mode) => mode.id === targetMode) ?? targetModes[0];
+
+  // Whatever the field is stating, the hint carries a reading it is not, so no
+  // conversion has to be done on paper.
+  const triggerHint =
     effectivePrice <= 0
       ? undefined
-      : priceUnit === "USDC"
-        ? tryPerUsdc > 0
-          ? `≈ ${triggerPriceTry.toFixed(4)} TRY / XLM`
-          : undefined
-        : `≈ ${formatUsdcPrice(effectivePrice)} USDC / XLM`;
+      : targetMode === "total"
+        ? `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`
+        : targetMode === "priceUsdc"
+          ? tryPerUsdc > 0
+            ? `≈ ${triggerPriceTry.toFixed(4)} TRY / XLM`
+            : undefined
+          : `≈ ${formatUsdcPrice(effectivePrice)} USDC / XLM`;
 
   const safeOrders = useMemo(
     () =>
@@ -788,6 +814,73 @@ function App() {
     showNotice("info", "Wallet Disconnected", "Freighter session removed from the terminal.");
   };
 
+  const minOutForPrice = (usdcPerXlm: number, amount: number): string =>
+    depositToken === "USDC"
+      ? (amount / usdcPerXlm).toFixed(7)
+      : (amount * usdcPerXlm).toFixed(7);
+
+  /** The typed trigger, read through its mode, as a `min_amount_out`. */
+  const targetToMinOut = (
+    value: string,
+    mode: TargetMode,
+    amount: number,
+  ): string | null => {
+    const entered = parseDecimal(value);
+    if (entered <= 0) return null;
+    // A total already is the minimum: it names the quantity coming back.
+    if (mode === "total") return entered.toFixed(7);
+    if (amount <= 0) return null;
+    const usdcPerXlm =
+      mode === "priceUsdc" ? entered : tryPerUsdc > 0 ? entered / tryPerUsdc : 0;
+    if (usdcPerXlm <= 0) return null;
+    return minOutForPrice(usdcPerXlm, amount);
+  };
+
+  /** The same trigger restated in `mode`, read back off the amounts. */
+  const minOutToTarget = (mode: TargetMode): string | null => {
+    if (mode === "total") {
+      const minOut = parseDecimal(minAmountOut);
+      return minOut > 0 ? minOut.toFixed(7) : null;
+    }
+    if (effectivePrice <= 0) return null;
+    if (mode === "priceUsdc") return effectivePrice.toFixed(7);
+    return tryPerUsdc > 0 ? (effectivePrice * tryPerUsdc).toFixed(4) : null;
+  };
+
+  const handleTargetValue = (value: string): void => {
+    setTargetValue(value);
+    const next = targetToMinOut(value, targetMode, parseDecimal(amountIn));
+    if (next) setMinAmountOut(next);
+  };
+
+  // Resizing the deposit holds the trigger and moves the quantity — unless the
+  // trigger is itself a quantity, in which case there is nothing to restate.
+  const handleAmountIn = (value: string): void => {
+    setAmountIn(value);
+    if (targetMode === "total") return;
+    const next = targetToMinOut(targetValue, targetMode, parseDecimal(value));
+    if (next) setMinAmountOut(next);
+  };
+
+  const selectTargetMode = (mode: TargetMode): void => {
+    if (mode === targetMode) return;
+    // Restate from the amounts, which are exact. A part-filled form has none,
+    // so the box keeps what it holds rather than sitting under a wrong label.
+    const restated = minOutToTarget(mode);
+    if (restated) setTargetValue(restated);
+    setTargetMode(mode);
+  };
+
+  const flipPair = (): void => {
+    setDepositToken(targetToken);
+    setTargetToken(depositToken);
+    setAmountIn(minAmountOut);
+    setMinAmountOut(amountIn);
+    // The reversed order pays out what this one was funded with, so a total
+    // trigger now names that figure. A rate survives the flip untouched.
+    if (targetMode === "total") setTargetValue(amountIn);
+  };
+
   const fillBalancePercentage = (percentage: number): void => {
     if (spendableDepositBalance <= 0) {
       setAmountIn("0.0000000");
@@ -800,101 +893,14 @@ function App() {
       );
       return;
     }
-    const nextAmount = (spendableDepositBalance * percentage) / 100;
-    setAmountIn(nextAmount.toFixed(7));
-    // Resizing the order is not repricing it. Scaling the input alone would
-    // drag the limit with it — "Max" on a 10 → 38 order would leave the same
-    // 38 against a far larger deposit, demanding a wildly different price.
-    if (numericAmount > 0 && numericMinOut > 0) {
-      setMinAmountOut(((numericMinOut * nextAmount) / numericAmount).toFixed(7));
-    }
+    handleAmountIn(((spendableDepositBalance * percentage) / 100).toFixed(7));
   };
 
-  // Price is carried in whichever unit the field is showing; these two put it
-  // back into the USDC-per-XLM the rest of the console reasons in.
-  const priceToUsdcPerXlm = (value: string): number => {
-    const entered = parseDecimal(value);
-    if (entered <= 0) return 0;
-    if (priceUnit === "USDC") return entered;
-    return tryPerUsdc > 0 ? entered / tryPerUsdc : 0;
-  };
-
-  const usdcPerXlmToPrice = (usdcPerXlm: number): string =>
-    priceUnit === "USDC"
-      ? usdcPerXlm.toFixed(7)
-      : (usdcPerXlm * tryPerUsdc).toFixed(4);
-
-  const minOutFor = (usdcPerXlm: number, amount: number): string =>
-    depositToken === "USDC"
-      ? (amount / usdcPerXlm).toFixed(7)
-      : (amount * usdcPerXlm).toFixed(7);
-
-  // Each handler writes the *other* field outright. Nothing derives a field
-  // that derives it back, so the pair cannot chase each other's rounding.
-  const handleAmountIn = (value: string): void => {
-    setAmountIn(value);
-    const amount = parseDecimal(value);
-    const price = priceToUsdcPerXlm(limitPrice);
-    if (amount > 0 && price > 0) setMinAmountOut(minOutFor(price, amount));
-  };
-
-  const handleMinAmountOut = (value: string): void => {
-    setMinAmountOut(value);
-    const minOut = parseDecimal(value);
-    const amount = parseDecimal(amountIn);
-    if (minOut <= 0 || amount <= 0) return;
-    setLimitPrice(
-      usdcPerXlmToPrice(
-        depositToken === "USDC" ? amount / minOut : minOut / amount,
-      ),
-    );
-  };
-
-  const handleLimitPrice = (value: string): void => {
-    setLimitPrice(value);
-    const price = priceToUsdcPerXlm(value);
-    const amount = parseDecimal(amountIn);
-    if (price > 0 && amount > 0) setMinAmountOut(minOutFor(price, amount));
-  };
-
-  // Switching units restates the same limit, so the quantity must not move.
-  // Restating works off the amounts rather than the string in the box: lira is
-  // shown to four places, and converting that back would let a display rounding
-  // become the new price.
-  const togglePriceUnit = (): void => {
-    const next: PriceUnit = priceUnit === "USDC" ? "TRY" : "USDC";
-    // The amounts are the exact statement of the limit, so restate from them.
-    // A half-filled form has none, and then the box itself is all there is —
-    // without that fallback the pill would relabel a number it never converted,
-    // leaving dollars sitting under a lira heading.
-    const usdcPerXlm =
-      effectivePrice > 0 ? effectivePrice : priceToUsdcPerXlm(limitPrice);
-    if (usdcPerXlm > 0) {
-      setLimitPrice(
-        next === "TRY"
-          ? (usdcPerXlm * tryPerUsdc).toFixed(4)
-          : usdcPerXlm.toFixed(7),
-      );
-    }
-    setPriceUnit(next);
-  };
-
-  const flipPair = (): void => {
-    setDepositToken(targetToken);
-    setTargetToken(depositToken);
-    setAmountIn(minAmountOut);
-    setMinAmountOut(amountIn);
-  };
-
-  // With two assets, naming either leg is the same gesture as reversing the
-  // pair, so both selectors run the flip rather than swapping one side and
+  // With two assets, naming the deposit leg is the same gesture as reversing
+  // the pair, so the selector runs the flip rather than swapping one side and
   // leaving the amounts to imply a price nobody asked for.
   const selectDepositToken = (token: TokenSymbol): void => {
     if (token !== depositToken) flipPair();
-  };
-
-  const selectTargetToken = (token: TokenSymbol): void => {
-    if (token !== targetToken) flipPair();
   };
 
   const assertFreighterTestnet = async (): Promise<void> => {
@@ -1288,44 +1294,75 @@ function App() {
                       </div>
 
                       <AmountField
-                        label="Minimum you accept"
-                        value={minAmountOut}
-                        onChange={handleMinAmountOut}
+                        label="Trigger"
+                        value={targetValue}
+                        onChange={handleTargetValue}
                         disabled={busy}
-                        hint={targetFiatValue}
+                        hint={triggerHint}
+                        aside={`Settles for ${numericMinOut.toFixed(4)} ${targetToken}`}
                         unitNode={
-                          <TokenSelector
-                            options={TOKEN_OPTIONS}
-                            value={targetToken}
-                            balances={tokenBalances}
-                            disabled={busy}
-                            onSelect={selectTargetToken}
-                          />
-                        }
-                      />
-
-                      <AmountField
-                        label="Target price"
-                        value={limitPrice}
-                        onChange={handleLimitPrice}
-                        disabled={busy}
-                        hint={priceHint}
-                        unitNode={
-                          <button
-                            type="button"
-                            onClick={togglePriceUnit}
-                            disabled={busy || tryPerUsdc <= 0}
-                            aria-label={`Price is in ${priceUnit} per XLM. Switch to ${
-                              priceUnit === "USDC" ? "TRY" : "USDC"
-                            }.`}
-                            className={cn(
-                              "pressable rounded-full border border-line-strong bg-surface-2",
-                              "px-3 py-1.5 text-footnote font-medium text-ink-2",
-                              "disabled:cursor-not-allowed disabled:opacity-50",
+                          <Menu
+                            ariaLabel="How the trigger is stated"
+                            panelClassName="w-64"
+                            trigger={({ open, toggle }) => (
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={toggle}
+                                aria-haspopup="listbox"
+                                aria-expanded={open}
+                                aria-label={`Trigger stated as ${activeTargetMode.label}. Change.`}
+                                className={cn(
+                                  "pressable flex h-9 items-center gap-2 rounded-full border px-2.5",
+                                  "disabled:pointer-events-none disabled:opacity-50",
+                                  open
+                                    ? "border-line-strong bg-surface-3"
+                                    : "border-line-strong bg-surface-2 hover:bg-surface-3",
+                                )}
+                              >
+                                <span className="text-footnote font-medium text-ink">
+                                  {activeTargetMode.label}
+                                </span>
+                                <ChevronDown
+                                  className={cn(
+                                    "size-3.5 shrink-0 text-ink-4 transition-transform duration-300",
+                                    open && "rotate-180",
+                                  )}
+                                  strokeWidth={2.25}
+                                  aria-hidden="true"
+                                />
+                              </button>
                             )}
                           >
-                            {priceUnit} / XLM
-                          </button>
+                            {({ close }) =>
+                              targetModes.map((mode) => (
+                                <MenuItem
+                                  key={mode.id}
+                                  selected={mode.id === targetMode}
+                                  onClick={() => {
+                                    selectTargetMode(mode.id);
+                                    close();
+                                  }}
+                                >
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block text-footnote font-medium text-ink">
+                                      {mode.label}
+                                    </span>
+                                    <span className="block truncate text-caption text-ink-4">
+                                      {mode.note}
+                                    </span>
+                                  </span>
+                                  {mode.id === targetMode ? (
+                                    <Check
+                                      className="size-3.5 shrink-0 text-accent-ink"
+                                      strokeWidth={2.5}
+                                      aria-hidden="true"
+                                    />
+                                  ) : null}
+                                </MenuItem>
+                              ))
+                            }
+                          </Menu>
                         }
                       />
 
