@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseFreighterAddress } from "./App";
+import { parseFreighterAddress } from "./wallet";
 
 /**
  * The console once showed a connected wallet that Freighter had never

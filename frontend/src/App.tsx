@@ -46,6 +46,7 @@ import { formatUsdcPrice, limitComparator } from "./lib/price";
 import { fetchOracleQuote } from "./oracle/reflector";
 import type { OracleQuote } from "./oracle/reflector";
 import { ROUTES } from "./routes";
+import { isWalletPermitted, parseFreighterAddress } from "./wallet";
 import {
   ACTIVE_VAULT,
   STOP_VAULT_VERSION,
@@ -259,15 +260,6 @@ const SIGNATURE_REJECTED_MESSAGE =
   "Signature Rejected: Transaction rejected by wallet.";
 const PENDING_CONFIRMATION_MESSAGE =
   "Transaction is still pending on the network. It may confirm shortly - refresh to check.";
-
-export const parseFreighterAddress = (result: unknown): string => {
-  if (typeof result === "string") return result;
-  if (typeof result !== "object" || result === null) return "";
-  const value = result as { address?: unknown; publicKey?: unknown };
-  if (typeof value.address === "string") return value.address;
-  if (typeof value.publicKey === "string") return value.publicKey;
-  return "";
-};
 
 const lifecycleLabels = [
   "Simulation",
@@ -983,12 +975,7 @@ function App() {
           // saved address survives a move to a new domain that was never granted
           // access. Asking is the difference between a session and a memory of
           // one.
-          const allowance: unknown = await isAllowed();
-          const permitted =
-            typeof allowance === "boolean"
-              ? allowance
-              : Boolean((allowance as { isAllowed?: unknown } | null)?.isAllowed);
-          if (!permitted) {
+          if (!isWalletPermitted(await isAllowed())) {
             // Leave the interface disconnected rather than showing an address the
             // wallet will refuse to sign for. Clearing the saved value keeps the
             // next reload honest too.
@@ -1231,12 +1218,7 @@ function App() {
     // a timer, and the user can revoke this origin from Freighter itself. When
     // that happens the console should go back to saying "connect", not keep an
     // address on screen and surface a raw extension error at signing time.
-    const allowance: unknown = await isAllowed();
-    const permitted =
-      typeof allowance === "boolean"
-        ? allowance
-        : Boolean((allowance as { isAllowed?: unknown } | null)?.isAllowed);
-    if (!permitted) {
+    if (!isWalletPermitted(await isAllowed())) {
       window.localStorage.removeItem("trigger_vault_wallet");
       setWalletAddress("");
       setConnectModalOpen(true);
