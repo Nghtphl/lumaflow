@@ -526,7 +526,7 @@
                     },
                     {
                       "key": {
-                        "symbol": "min_amount_out"
+                        "symbol": "min_user_out"
                       },
                       "val": {
                         "i128": {

@@ -135,6 +135,47 @@ mod non_pulling_router {
 }
 use non_pulling_router::NonPullingRouter;
 
+/// Pays back exactly the `amount_out_min` it was handed, nothing more.
+///
+/// This is the tightest fill the vault can possibly receive, which is what
+/// makes it the probe for the rounding: the gross floor is derived from the net
+/// floor, so if that division rounded down, the owner would land a stroop short
+/// and every test using a generous router would still pass.
+mod exact_floor_router {
+    use super::*;
+
+    #[contract]
+    pub struct ExactFloorRouter;
+
+    #[contractimpl]
+    impl ExactFloorRouter {
+        pub fn router_pair_for(env: Env, _token_a: Address, _token_b: Address) -> Address {
+            env.current_contract_address()
+        }
+
+        pub fn swap_exact_tokens_for_tokens(
+            env: Env,
+            amount_in: i128,
+            amount_out_min: i128,
+            path: Vec<Address>,
+            to: Address,
+            _deadline: u64,
+        ) -> Vec<i128> {
+            to.require_auth();
+
+            let pair = env.current_contract_address();
+            token::Client::new(&env, &path.get(0).unwrap()).transfer(&to, &pair, &amount_in);
+            token::Client::new(&env, &path.get(1).unwrap()).transfer(&pair, &to, &amount_out_min);
+
+            let mut res = Vec::new(&env);
+            res.push_back(amount_in);
+            res.push_back(amount_out_min);
+            res
+        }
+    }
+}
+use exact_floor_router::ExactFloorRouter;
+
 struct Fixture {
     contract_id: Address,
     owner: Address,
@@ -445,5 +486,134 @@ fn test_slippage_uses_actual_received_balance_and_reverts_atomically() {
     assert_eq!(token_in_client.balance(&f.router_id), 0);
     assert_eq!(token_out_client.balance(&f.contract_id), 0);
     assert_eq!(token_out_client.balance(&f.router_id), 2_000);
+    assert_eq!(client.get_order(&order_id).status, OrderStatus::Active);
+}
+
+// ── The net payout floor ─────────────────────────────────────────────────────
+//
+// `min_user_out` is a promise about the owner's wallet, not about the swap. The
+// earlier deployment checked the gross output and took the bounty out
+// afterwards, so an order guarded at 960 could settle paying 950. These pin the
+// corrected semantics down at both boundaries and at both ends of the fee range.
+
+/// The case the rename exists for: gross clears the floor, net does not.
+#[test]
+fn test_rejects_a_fill_that_clears_gross_but_not_the_net_floor() {
+    let env = Env::default();
+    let router_id = env.register(PullingRouter, ());
+    let f = setup(&env, router_id, 500, 2_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+    let token_out_client = token::Client::new(&env, &f.token_out);
+
+    // Router pays 1_000 gross; a 500 bps bounty leaves the owner 950.
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &960, &500);
+
+    let outcome = client.try_execute_order(&order_id, &f.executor);
+    assert_eq!(outcome, Err(Ok(Error::SlippageExceeded)));
+
+    // And the revert is total: no bounty, no payout, collateral still escrowed.
+    assert_eq!(token_out_client.balance(&f.owner), 0);
+    assert_eq!(token_out_client.balance(&f.executor), 0);
+    assert_eq!(
+        token::Client::new(&env, &f.token_in).balance(&f.contract_id),
+        500
+    );
+    assert_eq!(client.get_order(&order_id).status, OrderStatus::Active);
+}
+
+/// The boundary itself: net landing exactly on the floor is a fill.
+#[test]
+fn test_accepts_a_fill_that_lands_exactly_on_the_net_floor() {
+    let env = Env::default();
+    let router_id = env.register(PullingRouter, ());
+    let f = setup(&env, router_id, 500, 2_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &950, &500);
+    client.execute_order(&order_id, &f.executor);
+
+    let token_out_client = token::Client::new(&env, &f.token_out);
+    assert_eq!(token_out_client.balance(&f.owner), 950);
+    assert_eq!(token_out_client.balance(&f.executor), 50);
+}
+
+/// The tightest fill the vault can receive still leaves the owner whole.
+///
+/// A generous router hides the derivation entirely, so this one pays back
+/// exactly the gross it was asked for. 997 against 137 bps is deliberately
+/// awkward: the exact gross is 1010.85, the derivation rounds it up to 1011,
+/// the bounty floors to 13, and the owner ends on 998 — a stroop of headroom
+/// rather than a stroop short.
+#[test]
+fn test_tightest_possible_fill_still_clears_the_net_floor() {
+    let env = Env::default();
+    let router_id = env.register(ExactFloorRouter, ());
+    let f = setup(&env, router_id, 500, 5_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+    let token_out_client = token::Client::new(&env, &f.token_out);
+
+    // 997 is deliberately awkward against 137 bps: the exact gross is fractional.
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &997, &137);
+    client.execute_order(&order_id, &f.executor);
+
+    let paid = token_out_client.balance(&f.owner);
+    assert!(paid >= 997, "owner received {}, promised at least 997", paid);
+    assert_eq!(paid, 998);
+    // Everything the router paid was split between the two; nothing stuck.
+    assert_eq!(token_out_client.balance(&f.executor), 13);
+    assert_eq!(token_out_client.balance(&f.contract_id), 0);
+}
+
+/// With no bounty the two floors coincide, and nothing is skimmed.
+#[test]
+fn test_zero_fee_leaves_gross_and_net_identical() {
+    let env = Env::default();
+    let router_id = env.register(ExactFloorRouter, ());
+    let f = setup(&env, router_id, 500, 5_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+
+    let order_id = client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &1_000, &0);
+    client.execute_order(&order_id, &f.executor);
+
+    let token_out_client = token::Client::new(&env, &f.token_out);
+    assert_eq!(token_out_client.balance(&f.owner), 1_000);
+    assert_eq!(token_out_client.balance(&f.executor), 0);
+}
+
+/// At the 1_000 bps ceiling the divisor is at its smallest, which is where a
+/// sloppy derivation would drift furthest.
+#[test]
+fn test_max_fee_still_honours_the_net_floor() {
+    let env = Env::default();
+    let router_id = env.register(ExactFloorRouter, ());
+    let f = setup(&env, router_id, 500, 5_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+
+    let order_id =
+        client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &900, &MAX_FEE_BPS);
+    client.execute_order(&order_id, &f.executor);
+
+    let paid = token::Client::new(&env, &f.token_out).balance(&f.owner);
+    assert!(paid >= 900, "owner received {} at the fee ceiling", paid);
+}
+
+/// A floor large enough to overflow the derivation fails before the vault has
+/// spoken to the router at all, so no authorization is ever issued.
+#[test]
+fn test_unsatisfiable_floor_fails_before_touching_the_router() {
+    let env = Env::default();
+    let router_id = env.register(PullingRouter, ());
+    let f = setup(&env, router_id, 500, 2_000);
+    let client = TriggerVaultClient::new(&env, &f.contract_id);
+
+    let order_id =
+        client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &i128::MAX, &100);
+
+    let outcome = client.try_execute_order(&order_id, &f.executor);
+    assert_eq!(outcome, Err(Ok(Error::MathOverflow)));
+    assert_eq!(
+        token::Client::new(&env, &f.token_in).balance(&f.contract_id),
+        500
+    );
     assert_eq!(client.get_order(&order_id).status, OrderStatus::Active);
 }

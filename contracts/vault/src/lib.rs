@@ -40,6 +40,7 @@ pub enum Error {
     InvalidBalanceDelta = 9,
     AlreadyInitialized = 10,
     InputNotSpent = 11,
+    MathOverflow = 12,
 }
 
 // Soroban ledgers close approximately every five seconds. Active protocol state is
@@ -67,7 +68,13 @@ pub struct Order {
     pub token_in: Address,
     pub token_out: Address,
     pub amount_in: i128,
-    pub min_amount_out: i128,
+    /// The floor on what reaches the owner's wallet, *after* the keeper bounty.
+    ///
+    /// The earlier deployment held a gross floor and deducted the bounty from
+    /// it afterwards, so an order guarded at 38 paid out 37.62 at 100 bps — the
+    /// guarantee named a number the owner never received. This one is checked
+    /// against the figure actually transferred to the owner.
+    pub min_user_out: i128,
     pub fee_bps: u32,
     pub status: OrderStatus,
 }
@@ -98,6 +105,23 @@ impl TriggerVault {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND_TO,
         );
+    }
+
+    /// The gross output needed for `min_user_out` to survive the bounty.
+    ///
+    /// `fee_bps` is capped at `MAX_FEE_BPS`, so the divisor is never smaller
+    /// than 9_000 and never zero. The division rounds **up**: asking the router
+    /// for the exact quotient would let a truncated gross land a stroop short
+    /// of the floor, and the router minimum is a request, not the guarantee.
+    fn gross_floor_for(min_user_out: i128, fee_bps: u32) -> Result<i128, Error> {
+        let divisor = 10_000i128 - (fee_bps as i128);
+        let scaled = min_user_out
+            .checked_mul(10_000)
+            .ok_or(Error::MathOverflow)?;
+        let rounded = scaled
+            .checked_add(divisor - 1)
+            .ok_or(Error::MathOverflow)?;
+        Ok(rounded / divisor)
     }
 
     pub fn init(env: Env, admin: Address, router: Address) -> Result<(), Error> {
@@ -145,12 +169,12 @@ impl TriggerVault {
         token_in: Address,
         token_out: Address,
         amount_in: i128,
-        min_amount_out: i128,
+        min_user_out: i128,
         fee_bps: u32,
     ) -> Result<u32, Error> {
         owner.require_auth();
 
-        if amount_in <= 0 || min_amount_out <= 0 {
+        if amount_in <= 0 || min_user_out <= 0 {
             return Err(Error::InvalidAmount);
         }
         if token_in == token_out {
@@ -176,7 +200,7 @@ impl TriggerVault {
             token_in,
             token_out,
             amount_in,
-            min_amount_out,
+            min_user_out,
             fee_bps,
             status: OrderStatus::Active,
         };
@@ -239,6 +263,13 @@ impl TriggerVault {
 
         Self::bump_persistent_key(&env, &DataKey::Order(order_id));
 
+        // What the router will be asked for: the gross that leaves
+        // `min_user_out` standing once the bounty comes out. Computed before
+        // any external call so an unsatisfiable order fails without having
+        // touched the router or issued an authorization. It is only a request —
+        // the guarantee is re-derived from the observed delta below.
+        let router_floor = Self::gross_floor_for(order.min_user_out, order.fee_bps)?;
+
         let router = Self::get_router(env.clone())?;
         let vault = env.current_contract_address();
 
@@ -282,7 +313,7 @@ impl TriggerVault {
         let deadline = env.ledger().timestamp() + SWAP_DEADLINE_WINDOW;
         router_client.swap_exact_tokens_for_tokens(
             &order.amount_in,
-            &order.min_amount_out,
+            &router_floor,
             &path,
             &vault,
             &deadline,
@@ -303,13 +334,21 @@ impl TriggerVault {
             .checked_sub(token_out_before)
             .ok_or(Error::InvalidBalanceDelta)?;
 
-        if amount_out < order.min_amount_out {
+        // Bounty first, then the floor — in that order, because the floor is a
+        // promise about the owner's wallet and the bounty comes out before the
+        // owner is paid. Checking the gross here instead would guarantee a
+        // number nobody receives.
+        let fee_amount = amount_out
+            .checked_mul(order.fee_bps as i128)
+            .ok_or(Error::MathOverflow)?
+            / 10_000;
+        let user_amount = amount_out
+            .checked_sub(fee_amount)
+            .ok_or(Error::MathOverflow)?;
+
+        if user_amount < order.min_user_out {
             return Err(Error::SlippageExceeded);
         }
-
-        // Keeper bounty is paid from the realized output, never from the limit.
-        let fee_amount = (amount_out * (order.fee_bps as i128)) / 10_000;
-        let user_amount = amount_out - fee_amount;
 
         if fee_amount > 0 {
             token_out_client.transfer(&vault, &executor, &fee_amount);
