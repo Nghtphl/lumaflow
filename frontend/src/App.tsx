@@ -96,6 +96,7 @@ type OrderStatus = "Active" | "Executed" | "Cancelled";
 type OrderTab = "active" | "history";
 type ActionTab = "order" | "ramp";
 type TokenSymbol = "USDC" | "XLM";
+type PriceUnit = "USDC" | "TRY";
 type LifecycleState = "idle" | "running" | "complete" | "error";
 
 const TOKEN_OPTIONS: ReadonlyArray<{
@@ -375,6 +376,12 @@ function App() {
   const [targetToken, setTargetToken] = useState<TokenSymbol>("XLM");
   const [amountIn, setAmountIn] = useState("10");
   const [minAmountOut, setMinAmountOut] = useState("38");
+  // A limit order is a price, but the contract is given a quantity. The two
+  // fields are the same statement said two ways: `minAmountOut` stays the only
+  // figure that reaches the chain, and this one exists so nobody has to divide
+  // their way to it.
+  const [limitPrice, setLimitPrice] = useState((10 / 38).toFixed(7));
+  const [priceUnit, setPriceUnit] = useState<PriceUnit>("USDC");
   const [feeBps, setFeeBps] = useState("100");
   const [tab, setTab] = useState<OrderTab>("active");
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -477,6 +484,16 @@ function App() {
   const targetFiatValue = effectivePrice > 0
     ? `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`
     : undefined;
+  // The price field states the limit in one unit; the hint carries the other,
+  // so neither reading has to be worked out on paper.
+  const priceHint =
+    effectivePrice <= 0
+      ? undefined
+      : priceUnit === "USDC"
+        ? tryPerUsdc > 0
+          ? `≈ ${triggerPriceTry.toFixed(4)} TRY / XLM`
+          : undefined
+        : `≈ ${formatUsdcPrice(effectivePrice)} USDC / XLM`;
 
   const safeOrders = useMemo(
     () =>
@@ -791,6 +808,69 @@ function App() {
     if (numericAmount > 0 && numericMinOut > 0) {
       setMinAmountOut(((numericMinOut * nextAmount) / numericAmount).toFixed(7));
     }
+  };
+
+  // Price is carried in whichever unit the field is showing; these two put it
+  // back into the USDC-per-XLM the rest of the console reasons in.
+  const priceToUsdcPerXlm = (value: string): number => {
+    const entered = parseDecimal(value);
+    if (entered <= 0) return 0;
+    if (priceUnit === "USDC") return entered;
+    return tryPerUsdc > 0 ? entered / tryPerUsdc : 0;
+  };
+
+  const usdcPerXlmToPrice = (usdcPerXlm: number): string =>
+    priceUnit === "USDC"
+      ? usdcPerXlm.toFixed(7)
+      : (usdcPerXlm * tryPerUsdc).toFixed(4);
+
+  const minOutFor = (usdcPerXlm: number, amount: number): string =>
+    depositToken === "USDC"
+      ? (amount / usdcPerXlm).toFixed(7)
+      : (amount * usdcPerXlm).toFixed(7);
+
+  // Each handler writes the *other* field outright. Nothing derives a field
+  // that derives it back, so the pair cannot chase each other's rounding.
+  const handleAmountIn = (value: string): void => {
+    setAmountIn(value);
+    const amount = parseDecimal(value);
+    const price = priceToUsdcPerXlm(limitPrice);
+    if (amount > 0 && price > 0) setMinAmountOut(minOutFor(price, amount));
+  };
+
+  const handleMinAmountOut = (value: string): void => {
+    setMinAmountOut(value);
+    const minOut = parseDecimal(value);
+    const amount = parseDecimal(amountIn);
+    if (minOut <= 0 || amount <= 0) return;
+    setLimitPrice(
+      usdcPerXlmToPrice(
+        depositToken === "USDC" ? amount / minOut : minOut / amount,
+      ),
+    );
+  };
+
+  const handleLimitPrice = (value: string): void => {
+    setLimitPrice(value);
+    const price = priceToUsdcPerXlm(value);
+    const amount = parseDecimal(amountIn);
+    if (price > 0 && amount > 0) setMinAmountOut(minOutFor(price, amount));
+  };
+
+  // Switching units restates the same limit, so the quantity must not move.
+  // Restating works off the amounts rather than the string in the box: lira is
+  // shown to four places, and converting that back would let a display rounding
+  // become the new price.
+  const togglePriceUnit = (): void => {
+    const next: PriceUnit = priceUnit === "USDC" ? "TRY" : "USDC";
+    if (effectivePrice > 0 && tryPerUsdc > 0) {
+      setLimitPrice(
+        next === "TRY"
+          ? (effectivePrice * tryPerUsdc).toFixed(4)
+          : effectivePrice.toFixed(7),
+      );
+    }
+    setPriceUnit(next);
   };
 
   const flipPair = (): void => {
@@ -1152,7 +1232,7 @@ function App() {
                       <AmountField
                         label="You deposit"
                         value={amountIn}
-                        onChange={setAmountIn}
+                        onChange={handleAmountIn}
                         disabled={busy}
                         hint={depositFiatValue}
                         aside={`Spendable ${spendableDepositBalance.toFixed(2)} ${depositToken}`}
@@ -1204,7 +1284,7 @@ function App() {
                       <AmountField
                         label="Minimum you accept"
                         value={minAmountOut}
-                        onChange={setMinAmountOut}
+                        onChange={handleMinAmountOut}
                         disabled={busy}
                         hint={targetFiatValue}
                         unitNode={
@@ -1215,6 +1295,31 @@ function App() {
                             disabled={busy}
                             onSelect={selectTargetToken}
                           />
+                        }
+                      />
+
+                      <AmountField
+                        label="Target price"
+                        value={limitPrice}
+                        onChange={handleLimitPrice}
+                        disabled={busy}
+                        hint={priceHint}
+                        unitNode={
+                          <button
+                            type="button"
+                            onClick={togglePriceUnit}
+                            disabled={busy || tryPerUsdc <= 0}
+                            aria-label={`Price is in ${priceUnit} per XLM. Switch to ${
+                              priceUnit === "USDC" ? "TRY" : "USDC"
+                            }.`}
+                            className={cn(
+                              "pressable rounded-full border border-line-strong bg-surface-2",
+                              "px-3 py-1.5 text-footnote font-medium text-ink-2",
+                              "disabled:cursor-not-allowed disabled:opacity-50",
+                            )}
+                          >
+                            {priceUnit} / XLM
+                          </button>
                         }
                       />
 
