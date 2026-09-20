@@ -172,7 +172,13 @@ export default function AnchorPanel({
           if (cancelled) return;
           setQuote(priced);
           setQuoteError("");
-          if (priced.totalPrice > 0) onRate(priced.totalPrice, `SEP-38 · ${cfg.orgName}`);
+          // `total_price` carries this deposit's fee, so it answers "what would
+          // buying this have cost" — but the console spends it on "what is a
+          // USDC worth", across collateral and resting orders that have no
+          // deposit behind them. `price` is the fee-free rate that question
+          // wants, and it does not drift with the amount typed here.
+          const rate = priced.price || priced.totalPrice;
+          if (rate > 0) onRate(rate, `SEP-38 · ${cfg.orgName}`);
         })
         .catch((error: unknown) => {
           if (!cancelled) setQuoteError(messageOf(error));
@@ -610,7 +616,7 @@ export default function AnchorPanel({
                         />
                         <BridgeRow
                           label="Rate"
-                          value={`1 ${cfg.asset.code} = ${quote.totalPrice.toFixed(4)} TRY`}
+                          value={`1 ${cfg.asset.code} = ${(quote.price || quote.totalPrice).toFixed(4)} TRY`}
                         />
                         <BridgeRow
                           label="Anchor fee"

@@ -107,9 +107,6 @@ const TOKEN_OPTIONS: ReadonlyArray<{
   { symbol: "XLM", name: "Stellar Lumens", glyph: "✦" },
 ];
 
-const opposingToken = (token: TokenSymbol): TokenSymbol =>
-  token === "USDC" ? "XLM" : "USDC";
-
 const tokenContractId = (token: TokenSymbol): string =>
   token === "USDC" ? USDC_SAC : NATIVE_XLM_SAC;
 
@@ -786,17 +783,14 @@ function App() {
       );
       return;
     }
-    setAmountIn(((spendableDepositBalance * percentage) / 100).toFixed(7));
-  };
-
-  const selectDepositToken = (token: TokenSymbol): void => {
-    setDepositToken(token);
-    setTargetToken(opposingToken(token));
-  };
-
-  const selectTargetToken = (token: TokenSymbol): void => {
-    setTargetToken(token);
-    setDepositToken(opposingToken(token));
+    const nextAmount = (spendableDepositBalance * percentage) / 100;
+    setAmountIn(nextAmount.toFixed(7));
+    // Resizing the order is not repricing it. Scaling the input alone would
+    // drag the limit with it — "Max" on a 10 → 38 order would leave the same
+    // 38 against a far larger deposit, demanding a wildly different price.
+    if (numericAmount > 0 && numericMinOut > 0) {
+      setMinAmountOut(((numericMinOut * nextAmount) / numericAmount).toFixed(7));
+    }
   };
 
   const flipPair = (): void => {
@@ -804,6 +798,17 @@ function App() {
     setTargetToken(depositToken);
     setAmountIn(minAmountOut);
     setMinAmountOut(amountIn);
+  };
+
+  // With two assets, naming either leg is the same gesture as reversing the
+  // pair, so both selectors run the flip rather than swapping one side and
+  // leaving the amounts to imply a price nobody asked for.
+  const selectDepositToken = (token: TokenSymbol): void => {
+    if (token !== depositToken) flipPair();
+  };
+
+  const selectTargetToken = (token: TokenSymbol): void => {
+    if (token !== targetToken) flipPair();
   };
 
   const assertFreighterTestnet = async (): Promise<void> => {
