@@ -20,6 +20,7 @@ import {
 import {
   getAddress as getPublicKey,
   getNetwork,
+  isAllowed,
   isConnected,
   requestAccess,
   signTransaction,
@@ -252,12 +253,14 @@ interface Telemetry {
 
 const WRONG_NETWORK_MESSAGE =
   "Please switch your Freighter wallet to the Testnet network.";
+const WALLET_REAUTHORISE_MESSAGE =
+  "Freighter has not authorised this site — it may have locked, or the permission was revoked. Connect again to continue.";
 const SIGNATURE_REJECTED_MESSAGE =
   "Signature Rejected: Transaction rejected by wallet.";
 const PENDING_CONFIRMATION_MESSAGE =
   "Transaction is still pending on the network. It may confirm shortly - refresh to check.";
 
-const parseFreighterAddress = (result: unknown): string => {
+export const parseFreighterAddress = (result: unknown): string => {
   if (typeof result === "string") return result;
   if (typeof result !== "object" || result === null) return "";
   const value = result as { address?: unknown; publicKey?: unknown };
@@ -973,13 +976,47 @@ function App() {
                   (connection as { isConnected?: unknown } | null)?.isConnected,
                 );
           if (!connected) return;
-          const result: unknown = await getPublicKey();
-          const address = parseFreighterAddress(result) || savedAddress;
-          if (!address) return;
+
+          // `isConnected` only says the extension exists. Whether *this origin*
+          // may talk to it is a separate question, and the answer changes on its
+          // own: the wallet locks on a timer, and permission is per-origin, so a
+          // saved address survives a move to a new domain that was never granted
+          // access. Asking is the difference between a session and a memory of
+          // one.
+          const allowance: unknown = await isAllowed();
+          const permitted =
+            typeof allowance === "boolean"
+              ? allowance
+              : Boolean((allowance as { isAllowed?: unknown } | null)?.isAllowed);
+          if (!permitted) {
+            // Leave the interface disconnected rather than showing an address the
+            // wallet will refuse to sign for. Clearing the saved value keeps the
+            // next reload honest too.
+            window.localStorage.removeItem("trigger_vault_wallet");
+            setWalletAddress("");
+            return;
+          }
+
+          const result = await getPublicKey();
+          if (result?.error) {
+            window.localStorage.removeItem("trigger_vault_wallet");
+            setWalletAddress("");
+            return;
+          }
+          // Only what the wallet actually returned. Falling back to the saved
+          // address here is what produced a console that looked connected and
+          // then asked for authorisation at signing time.
+          const address = parseFreighterAddress(result);
+          if (!address) {
+            window.localStorage.removeItem("trigger_vault_wallet");
+            setWalletAddress("");
+            return;
+          }
           window.localStorage.setItem("trigger_vault_wallet", address);
           setWalletAddress(address);
         } catch {
           window.localStorage.removeItem("trigger_vault_wallet");
+          setWalletAddress("");
         }
       })();
     }, 0);
@@ -1190,6 +1227,21 @@ function App() {
   };
 
   const assertFreighterTestnet = async (): Promise<void> => {
+    // Permission can lapse between connecting and signing — the wallet locks on
+    // a timer, and the user can revoke this origin from Freighter itself. When
+    // that happens the console should go back to saying "connect", not keep an
+    // address on screen and surface a raw extension error at signing time.
+    const allowance: unknown = await isAllowed();
+    const permitted =
+      typeof allowance === "boolean"
+        ? allowance
+        : Boolean((allowance as { isAllowed?: unknown } | null)?.isAllowed);
+    if (!permitted) {
+      window.localStorage.removeItem("trigger_vault_wallet");
+      setWalletAddress("");
+      setConnectModalOpen(true);
+      throw new Error(WALLET_REAUTHORISE_MESSAGE);
+    }
     const network = await getNetwork();
     if (network.error) {
       throw new Error(safeMessage(network.error));
