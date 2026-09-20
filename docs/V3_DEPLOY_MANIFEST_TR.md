@@ -204,7 +204,44 @@ yani rakam simülasyon tuhaflığı değil, boyutun doğrudan sonucu. Deploy aya
 V2'de 0,0033 XLM'e mal olmuştu; V3'ün constructor'ı bir `Config` girdisi daha
 yazdığı için biraz üstünde beklenir, ama büyüklük sırası aynıdır.
 
-**Toplam beklenen: ~4,01 XLM.**
+**Toplam beklenen: ~4,01 XLM.** ← bu tahmin de eksikti, aşağıya bakınız.
+
+### 6.1 Gerçekleşen: upload gönderildi
+
+| Kalem | Rakam |
+| --- | --- |
+| İşlem | `6c6fecf9cc2a783faf5c56469b1dd72b60af1c5d314de11b037212dd8fa828e6` |
+| Dönen WASM hash | `4ced7ccf…4377d8` — **beklenenle aynı** ✅ |
+| Ödenen | **3.4824592 XLM** (simülasyon 4.0045 demişti; gerçeği daha ucuz çıktı) |
+
+### 6.2 Deploy + constructor: 64,83 XLM — sınırın çok üstünde ⛔
+
+Yükleme sonrası deploy işlemi kuruldu ve **gönderilmeden** simüle edildi:
+
+| Kalem | Rakam |
+| --- | --- |
+| `minResourceFee` | **64.8300496 XLM** |
+| Constructor simülasyonu | **hatasız** — parametreler kabul edildi |
+| `instructions` | 1 194 310 |
+| `write_bytes` | 824 |
+| Footprint | 1 salt-okunur (WASM kodu), 2 okuma-yazma (instance + Config) |
+
+**Sebep kira (rent), hesaplama değil.** Yazılan veri 824 bayt; masrafı yapan
+`bump_instance_ttl`. Soroban'da instance TTL'ini uzatmak, instance'ın
+referans verdiği **WASM kod girdisini de** uzatır — yani 24 981 baytlık kodun
+kirası ~120 güne (`PERSISTENT_TTL_EXTEND_TO = 2 073 600` ledger) peşin ödenir.
+
+V2'nin deploy'u 0,0033 XLM'e mal olmuştu çünkü V2'de constructor yok; TTL
+uzatması ilk çağrıya kalmıştı.
+
+**Toplam: 3,4825 + 64,8300 = 68,3125 XLM.** Onaylanan sınır 4,1 XLM.
+**Deploy gönderilmedi.**
+
+TTL hedefini düşürmek de kurtarmıyor: kira ledger sayısıyla kabaca doğrusal,
+yani ~30 güne (`518 400`) inmek bile ≈16 XLM demek — hâlâ sınırın üstünde. Ve
+bu, CLAUDE.md'deki ~120 günlük TTL kuralından sapmak, kontratı değiştirmek,
+yeni bir hash ve yeni bir yükleme (+~3,5 XLM) anlamına gelir.
+
 
 **Bu, oturumda konulan 1,8 XLM üst sınırının üzerindedir.** Daha önce bu
 belgede verilen "~0,5–1,5 XLM" tahmini yanlıştı; ölçüm onun yerini aldı.
