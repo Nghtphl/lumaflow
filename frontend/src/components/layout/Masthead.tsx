@@ -37,17 +37,19 @@ export function Masthead({ contractUrl }: MastheadProps) {
         data-reveal
         className="max-w-3xl text-balance text-4xl leading-[1.08] font-medium tracking-[-0.03em] text-ink sm:text-5xl"
       >
-        Limit orders on Stellar
-        <span className="block text-ink-3">that settle themselves.</span>
+        Limit orders and stop-loss
+        <span className="block text-ink-3">that rest on Stellar.</span>
       </h1>
 
       <p
         data-reveal
         className="mt-5 max-w-xl text-pretty text-body leading-relaxed text-ink-2"
       >
-        LumaFlow prices your exit in Turkish lira, holds the collateral in a
-        Soroban contract, and lets an autonomous keeper close the position the
-        moment your rate is reachable. No custody, no manual watching.
+        LumaFlow prices your exit in Turkish lira and holds the collateral in a
+        Soroban contract until the order settles or you cancel it. A limit order
+        fills when the market is good enough; a stop-loss waits for a price feed
+        to fall through your level. Anyone can execute; nobody takes custody.
+        Stellar Testnet, and the lira bank leg runs against a sandbox anchor.
       </p>
 
       <div

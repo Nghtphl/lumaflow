@@ -79,10 +79,11 @@ function clearToken(key: string): void {
  * have issued. An unchecked SEP-10 client will happily sign a payment dressed up
  * as a challenge, so every one of these assertions is load-bearing.
  */
-function assertValidChallenge(
+export function assertValidChallenge(
   cfg: AnchorConfig,
   xdrText: string,
   networkPassphrase: string,
+  account: string,
 ): void {
   if (networkPassphrase !== Networks.TESTNET) {
     throw new Error(
@@ -110,6 +111,32 @@ function assertValidChallenge(
       `Challenge is scoped to "${first.name}", not "${cfg.homeDomain} auth".`,
     );
   }
+  // SEP-10 binds the challenge to the account being authenticated by making it
+  // the source of the first operation. Without this check the wallet would sign
+  // a challenge minted for somebody else's account — the signature would not
+  // authenticate them, but the user would have signed a statement about an
+  // account that is not theirs, and we would have asked them to.
+  if (first.source !== account) {
+    throw new Error(
+      `Challenge names ${first.source || "no account"} as the client, not the connected wallet.`,
+    );
+  }
+  // `web_auth_domain`, when the anchor sends it, must name the server that
+  // issued the challenge. It is what stops a challenge from one service being
+  // replayed against another that trusts the same signing key. It is optional
+  // in the spec, so absence is tolerated and a mismatch is not.
+  const webAuthDomain = transaction.operations.find(
+    (operation) => operation.type === "manageData" && operation.name === "web_auth_domain",
+  );
+  if (webAuthDomain && webAuthDomain.type === "manageData") {
+    const expected = new URL(cfg.webAuth).host;
+    const claimed = webAuthDomain.value ? new TextDecoder().decode(webAuthDomain.value) : "";
+    if (claimed !== expected) {
+      throw new Error(
+        `Challenge claims web_auth_domain "${claimed}", not "${expected}".`,
+      );
+    }
+  }
 }
 
 async function requestToken(cfg: AnchorConfig, account: string): Promise<string> {
@@ -132,7 +159,7 @@ async function requestToken(cfg: AnchorConfig, account: string): Promise<string>
   }
 
   const passphrase = challenge.network_passphrase || cfg.networkPassphrase;
-  assertValidChallenge(cfg, challenge.transaction, passphrase);
+  assertValidChallenge(cfg, challenge.transaction, passphrase, account);
 
   const signed = await signTransaction(challenge.transaction, {
     networkPassphrase: passphrase,

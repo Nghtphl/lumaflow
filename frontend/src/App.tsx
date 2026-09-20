@@ -576,6 +576,15 @@ function App() {
   const hasLoadedOrders = useRef(false);
   /** Whether the stop vault has already answered with its configuration. */
   const hasStopConfig = useRef(false);
+  /**
+   * The wallet a balance read was started for.
+   *
+   * Horizon and the RPC answer on their own schedule, so a read started for one
+   * account can land after the wallet has already switched to another. Writing
+   * it anyway would show account A's balance under account B's address — and
+   * the Max button and the insufficient-funds check both read that number.
+   */
+  const balanceOwner = useRef("");
 
   const location = useLocation();
   const isConsole = location.pathname.startsWith(ROUTES.console);
@@ -1000,6 +1009,7 @@ function App() {
     const balance = Number(
       account.balances.find((item) => item.asset_type === "native")?.balance || 0,
     );
+    if (balanceOwner.current !== address) return balance;
     setWalletBalance(balance);
     return balance;
   }, []);
@@ -1024,6 +1034,7 @@ function App() {
     if (!Number.isFinite(balance) || balance < 0) {
       throw new Error("USDC balance response was invalid");
     }
+    if (balanceOwner.current !== address) return balance;
     setUsdcBalance(balance);
     return balance;
   }, []);
@@ -1032,10 +1043,14 @@ function App() {
     async (addressOverride?: string): Promise<void> => {
       const address = addressOverride || walletAddress;
       if (!address) {
+        balanceOwner.current = "";
         setWalletBalance(0);
         setUsdcBalance(0);
         return;
       }
+      // Claim this read before it starts: whichever read is claimed last is the
+      // only one allowed to write, so a slow earlier account cannot win.
+      balanceOwner.current = address;
       // Keep each balance independent: a transient Horizon failure must not
       // discard a valid SAC balance (or vice versa).
       await Promise.allSettled([

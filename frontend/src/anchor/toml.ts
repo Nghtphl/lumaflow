@@ -24,8 +24,20 @@ interface ParsedToml {
  * rather than thrown on: an unfamiliar key in someone else's TOML must not stop
  * discovery of the keys we do need.
  */
+/**
+ * Keys that must never be written onto a parsed table.
+ *
+ * The key pattern below accepts letters and underscores, which `__proto__`
+ * satisfies. Upper-casing it happens to produce a harmless `__PROTO__`, but that
+ * is an accident of formatting rather than a decision, and an accident is a poor
+ * thing to rest prototype safety on. This states it.
+ */
+const UNSAFE_KEYS = new Set(["__PROTO__", "CONSTRUCTOR", "PROTOTYPE"]);
+
+const emptyTable = (): Record<string, string> => Object.create(null) as Record<string, string>;
+
 function parseToml(text: string): ParsedToml {
-  const root: Record<string, string> = {};
+  const root: Record<string, string> = emptyTable();
   const currencies: Array<Record<string, string>> = [];
   let target: Record<string, string> = root;
   let inCurrency = false;
@@ -38,10 +50,10 @@ function parseToml(text: string): ParsedToml {
     if (arrayTable) {
       inCurrency = arrayTable[1].toUpperCase() === "CURRENCIES";
       if (inCurrency) {
-        target = {};
+        target = emptyTable();
         currencies.push(target);
       } else {
-        target = {};
+        target = emptyTable();
       }
       continue;
     }
@@ -49,7 +61,7 @@ function parseToml(text: string): ParsedToml {
     if (/^\[[^[\]]+\]$/.test(line)) {
       // A plain [SECTION] such as [DOCUMENTATION]; its keys are not ours.
       inCurrency = false;
-      target = {};
+      target = emptyTable();
       continue;
     }
 
@@ -61,8 +73,10 @@ function parseToml(text: string): ParsedToml {
     // Arrays (ACCOUNTS=[…]) and inline tables are not needed by this client.
     if (value.startsWith("[") || value.startsWith("{")) continue;
 
+    const name = key.toUpperCase();
+    if (UNSAFE_KEYS.has(name)) continue;
     const quoted = /^"(.*)"$/.exec(value) || /^'(.*)'$/.exec(value);
-    target[key.toUpperCase()] = quoted ? quoted[1] : value.replace(/\s+#.*$/, "");
+    target[name] = quoted ? quoted[1] : value.replace(/\s+#.*$/, "");
   }
 
   return { root, currencies };
