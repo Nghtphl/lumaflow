@@ -1,4 +1,4 @@
-import { Ban, Wallet, Zap } from "lucide-react";
+import { Ban, TriangleAlert, Wallet, Zap } from "lucide-react";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 
@@ -16,6 +16,12 @@ export interface OrderCardProps {
   collateralTry: number | null;
   /** Implied lira price of one XLM at the trigger, or null without a rate. */
   triggerTry: number | null;
+  /**
+   * Why this order can never settle, or null when it can. Unfillable orders are
+   * real on-chain state, so they are shown rather than hidden — but they must
+   * not look like an order that is merely waiting for its price.
+   */
+  unfillableReason: string | null;
   isOwn: boolean;
   /**
    * Whether the cancel affordance is offered. Distinct from `isOwn`: with no
@@ -51,6 +57,7 @@ export function OrderCard({
   id,
   ownerLabel,
   status,
+  unfillableReason,
   inputSymbol,
   outputSymbol,
   amountIn,
@@ -70,7 +77,16 @@ export function OrderCard({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h3 className="font-mono text-callout font-medium text-ink">#{id}</h3>
-            <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>
+            {status === "Active" && unfillableReason ? (
+              <Badge
+                tone="warning"
+                icon={<TriangleAlert className="size-3" strokeWidth={2.25} aria-hidden="true" />}
+              >
+                Unfillable
+              </Badge>
+            ) : (
+              <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>
+            )}
             {isOwn ? (
               <Badge
                 tone="neutral"
@@ -82,7 +98,10 @@ export function OrderCard({
           </div>
           <p className="mt-1.5 truncate font-mono text-caption text-ink-4">{ownerLabel}</p>
         </div>
-        <span className="shrink-0 font-mono text-caption text-ink-3">
+        <span
+          className="shrink-0 font-mono text-caption text-ink-3"
+          title={unfillableReason ?? undefined}
+        >
           {inputSymbol}/{outputSymbol}
         </span>
       </header>
@@ -123,8 +142,9 @@ export function OrderCard({
             <Button
               size="sm"
               variant="quiet"
-              disabled={busy}
+              disabled={busy || unfillableReason !== null}
               onClick={onExecute}
+              title={unfillableReason ?? undefined}
               icon={<Zap className="size-3.5" strokeWidth={2.25} aria-hidden="true" />}
             >
               Execute

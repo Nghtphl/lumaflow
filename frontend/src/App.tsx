@@ -112,6 +112,25 @@ const opposingToken = (token: TokenSymbol): TokenSymbol =>
 const tokenContractId = (token: TokenSymbol): string =>
   token === "USDC" ? USDC_SAC : NATIVE_XLM_SAC;
 
+/**
+ * Why an order can never settle, or null when it can.
+ *
+ * Both sides have to be token *contracts* and they have to differ. Several
+ * early orders on this deployment fail one of those: some carry the same asset
+ * on both sides, and one carries an account address (strkey `G`) where a token
+ * contract (strkey `C`) belongs — an empty shell variable at deploy time. They
+ * are real on-chain state, so they are shown, but never as merely waiting.
+ */
+const unfillableReason = (tokenIn: string, tokenOut: string): string | null => {
+  if (!tokenIn.startsWith("C") || !tokenOut.startsWith("C")) {
+    return "One side of this order is an account address, not a token contract, so there is nothing to swap through.";
+  }
+  if (tokenIn === tokenOut) {
+    return "Both sides of this order are the same asset. No such pool exists, so it can never settle.";
+  }
+  return null;
+};
+
 const tokenSymbolFromContract = (contractId: string): TokenSymbol | "TOKEN" =>
   contractId === USDC_SAC
     ? "USDC"
@@ -1474,6 +1493,7 @@ function App() {
                     triggerTry={
                       tryPerUsdc > 0 && order.minAmountOut > 0 ? orderTryPerXlm : null
                     }
+                    unfillableReason={unfillableReason(order.tokenIn, order.tokenOut)}
                     isOwn={connected && order.owner === walletAddress}
                     canCancel={!connected || order.owner === walletAddress}
                     busy={busy}
