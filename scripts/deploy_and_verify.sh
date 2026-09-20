@@ -124,20 +124,20 @@ PAIR_ADDR="$(read_call "$SOROSWAP_ROUTER" router_pair_for --token_a "$TOKEN_IN" 
 ok "router_pair_for → $PAIR_ADDR   (this is the address execute_order authorizes)"
 
 # ---------------------------------------------------------------------------
-say "6/8 Quote the swap and pick min_amount_out"
+say "6/8 Quote the swap and pick min_user_out"
 AMOUNTS="$(read_call "$SOROSWAP_ROUTER" router_get_amounts_out --amount_in "$AMOUNT_IN" --path "[\"$TOKEN_IN\",\"$TOKEN_OUT\"]")"
 ok "router_get_amounts_out → $AMOUNTS"
 EXPECTED_OUT="$(printf '%s' "$AMOUNTS" | tr -dc '0-9,' | tr ',' '\n' | tail -1)"
 [ -n "$EXPECTED_OUT" ] && [ "$EXPECTED_OUT" != "0" ] || die "could not quote the swap — check pool liquidity"
 MIN_OUT=$(( EXPECTED_OUT * 95 / 100 ))   # 5% headroom so the demo is not lost to a tick of price movement
-ok "expected out $EXPECTED_OUT → min_amount_out $MIN_OUT"
+ok "expected out $EXPECTED_OUT → min_user_out $MIN_OUT"
 
 # ---------------------------------------------------------------------------
 say "7/8 Create and execute one real order"
 CREATE_LOG="$(mktemp)"
 stellar contract invoke --id "$VAULT_ID" --source "$IDENTITY" --network "$NETWORK" \
   -- create_order --owner "$ACCOUNT" --token_in "$TOKEN_IN" --token_out "$TOKEN_OUT" \
-     --amount_in "$AMOUNT_IN" --min_amount_out "$MIN_OUT" --fee_bps "$FEE_BPS" 2>&1 | tee "$CREATE_LOG"
+     --amount_in "$AMOUNT_IN" --min_user_out "$MIN_OUT" --fee_bps "$FEE_BPS" 2>&1 | tee "$CREATE_LOG"
 ORDER_ID="$(read_call "$VAULT_ID" get_order_count | tr -d '"')"
 ok "order #$ORDER_ID created"
 

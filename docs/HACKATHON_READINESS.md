@@ -1,170 +1,104 @@
-# TriggerVault — Pro Hackathon 2026 readiness review
+# TriggerVault — Pro Hackathon 2026 submission status
 
-Reviewed **2026-09-19** against *Pro Hackathon 2026 Tracks & Handbook* (Rise In × Stellar).
+Re-verified **2026-09-20** against *Pro Hackathon 2026 Tracks & Handbook* (Rise In × Stellar).
 Submission deadline: **Day 2, 12:00**.
+
+Every ✅ below was checked by querying Soroban RPC and Horizon directly on the date above —
+not by reading this repository's own prose. Where a claim rests on something outside the
+chain (the organiser's portal, a slide deck), it is marked ❓ rather than ✅.
 
 ---
 
 ## Verdict
 
-The Soroban work is the strong part: the contract is clean, auth and TTL patterns are
-deliberate, the balance-delta slippage check is better engineering than most hackathon
-code, and there are 9 unit tests. What is missing is almost entirely **the part the rubric
-weights highest** — a fiat rail — plus proof that the DEX integration works against a real
-protocol rather than a test mock.
+The handbook's two heaviest criteria — an **eligible protocol integration that is
+load-bearing**, and a **local payment / anchor rail** — are both satisfied and both have
+transaction hashes behind them. What remains is administrative: portal fields, track
+selection and the deck.
 
 | Handbook requirement | Status |
 | --- | --- |
-| 1. Integration with an eligible protocol | ⚠️ **Interface only.** The router interface matches Soroswap's, but the only implementation it has ever been called against is `MockRouter` in `test.rs`. As written it would fail against the real router (see P0-2). |
-| 2. Anchor / local payments (TRY ⇄ Stellar) | ❌ **Absent.** No SEP-1/6/10/24/31/38 anywhere in the repo. *"Anchor and local payment integrations carry the highest weight."* |
-| 3. Core feature — integration is load-bearing | ⚠️ The swap is load-bearing in design; nothing proves it on testnet. |
-| Deployed on testnet, real functionality | Vault redeployed as `CDVJV6SI…` on the current build, initialised with the real Soroswap router. The previous instance `CDERIBD7…` ran an older build whose settlement path pushed collateral to the router instead of authorising its pull, so `execute_order` always reverted there and never completed. Settlement is unproven on chain until one runs on the new instance. |
-| Mermaid architecture diagram (Scale Track) | ❌ Missing |
-| Stellar Skills cited by path | ❌ Missing (explicit submission requirement) |
-| Public repo + README + live demo URL + documented contract IDs | ⚠️ Repo yes; README is 755 bytes; no deployment config, no live URL |
+| 1. Integration with an eligible protocol | ✅ **Proven on chain.** `execute_order` [`3b2e80ce…`](https://stellar.expert/explorer/testnet/tx/3b2e80cef75ab2381ffef82c7421f1e43bd132fbc62740746c7b5a4c612080ef) emits a `SoroswapRouter` `swap` from the published testnet router `CCJUD55A…` and a `SoroswapPair` `swap`/`sync` from the real pool `CCBX3NZT…`. 100 XLM in, 10.5357430 USDC out, 0.1053570 USDC bounty, 10.4303860 USDC to the owner. |
+| 2. Anchor / local payments (TRY ⇄ Stellar) | ✅ **Implemented and exercised.** SEP-1/6/10/12/38 client in `frontend/src/anchor/`; deposit settled on chain in [`65434cdf…`](https://stellar.expert/explorer/testnet/tx/65434cdf31f19aa23d6408da4c3b6bf32587f3a169fadfa4088e44bbdb411d66). Sandbox anchor — see *Known limitations*. |
+| 3. Core feature — integration is load-bearing | ✅ Settlement **is** the product. There is no code path that fills an order without going through the router, and the fill is validated by the vault's own balance delta. |
+| Deployed on testnet, real functionality | ✅ Vault `CAVF2IT2…R4HWP2INT`, WASM `d9ad61c2…10142c` — verified byte-identical to a local `cargo build --release`. Router slot verified to hold the Soroswap router, not an account. Order #1 created and executed. Two earlier instances stay listed in the console so their resting collateral remains cancellable. |
+| Mermaid architecture diagram | ✅ In `README.md`, nine-step flow from TRY deposit to TRY payout. |
+| Stellar Skills cited by path | ✅ In `README.md`, five skill files with source repos. |
+| Public repo + README + live demo URL + documented contract IDs | ✅ README documents vault, USDC SAC, USDC issuer, XLM SAC and router with explorer links. Live demo at <https://trigger-vault-mu.vercel.app>. |
+| `cargo test` green; release build clean | ✅ 17 tests passing as of 2026-09-20. |
+| Pitch deck on the official template | ❓ **Not verifiable from this repository.** |
+| Portal submission, track selection, team details | ❓ **Not verifiable from this repository.** |
 
 ---
 
-## P0 — blockers, in the order I would do them tonight
+## The one thing this repository cannot tell you
 
-### P0-1 · Ship the anchor rail
-See `docs/ANCHOR_INTEGRATION.md`. This is the single highest-scoring piece of work
-available and nothing else competes with it for time. Minimum viable version: the **deposit**
-direction (TRY → USDC → order collateral) end-to-end with real transaction hashes.
+Four items are organiser-side and no amount of code changes them. They are the only
+remaining way to lose points on something already built:
 
-### P0-2 · `execute_order` cannot work against the real Soroswap router
-
-`contracts/vault/src/lib.rs` does this:
-
-```rust
-token_in_client.transfer(&env.current_contract_address(), &router, &order.amount_in); // ← pre-transfer
-router_client.swap_exact_tokens_for_tokens(&order.amount_in, …, &env.current_contract_address(), &deadline);
-```
-
-The real Soroswap router does this:
-
-```rust
-to.require_auth();
-TokenClient::new(&e, &path.get(0).unwrap()).transfer(&to, &pair, &amounts.get(0).unwrap());
-```
-
-It **pulls** `amount_in` from `to` (your vault) and sends it to the *pair*, not the router.
-So the current flow (a) strands `amount_in` at the router address and (b) then asks the
-vault to pay a second time — from a balance it no longer has — via a deeper sub-invocation
-that the vault has not authorized. Both halves fail. `MockRouter` hides this because it
-pays out of its own pre-minted balance and ignores the tokens it was sent.
-
-Two ways out, pick by remaining time:
-
-* **Correct Soroswap call (better score, ~1–2 h).** Delete the pre-transfer; before the
-  swap, authorize the router's sub-invocation from the vault with
-  `env.authorize_as_current_contract(vec![&env, InvokerContractAuthEntry::Contract(
-  SubContractInvocation { context: ContractContext { contract: token_in, fn_name:
-  symbol_short!("transfer"), args: (vault, pair, amount_in).into_val(&env) },
-  sub_invocations: vec![&env] })])`, where `pair` comes from the Soroswap factory
-  (`get_pair` / `pair_for`). Then re-point the deployed vault at the real testnet router
-  with `set_router` and land **one real `execute_order` transaction** — that hash is the
-  proof the rubric is asking for.
-* **Settlement pattern (safer, ~30 min).** Keep the vault DEX-agnostic: transfer `amount_in`
-  to the executor, let the keeper route through **Soroswap's Routing API** (an eligible
-  partner in its own right), and require the executor to deliver ≥ `min_amount_out` back
-  within the same transaction. Your existing balance-delta check already enforces this
-  atomically — the design is sound, it just needs the transfer target changed and a test.
-
-Either way: **add an integration test against a router that pulls funds the way the real
-one does**, so the mock stops flattering the code.
-
-### P0-3 · Remove fabricated data from the UI
-`frontend/src/App.tsx` invents order timestamps:
-
-```ts
-createdAt: new Date(fetchedAt - Math.max(0, count - (index + 1)) * 60_000).toISOString()
-```
-
-That is hardcoded fake data in a rubric that says *"real functionality — not mocked or
-hardcoded"*. Fix by emitting `env.ledger().timestamp()` into the `Order` struct (one field,
-one migration-free change since you can redeploy) or by reading the creation ledger time
-from the event/tx. If neither fits the time budget, drop the column.
-
-Same category: the empty-state copy claims *"Autonomous keeper engine is actively scanning
-order book"* while no keeper is deployed. Either run the keeper somewhere public or change
-the wording.
-
-### P0-4 · Live demo URL
-The handbook requires *"a functional, publicly accessible application that judges can
-interact with"*. There is no deploy config in the repo. `npm run build` + Vercel/Netlify/
-Cloudflare Pages, with the env vars from `frontend/.env.example`, is 10 minutes. Put the URL
-in the README, in the submission form, and on the last slide.
-
-### P0-5 · README rewrite (it is a judged artifact)
-755 bytes will not carry criterion 6. It needs: the "why" narrative and target user
-(Turkish retail, lira-denominated), the anchor flow, an architecture section with the
-**Mermaid** diagram, **documented contract IDs** (vault, USDC SAC, router) with
-stellar.expert links, env vars, setup/run/test instructions for all three packages, the live
-demo URL, known limitations, and the **Stellar Skills used, cited by path**.
-
-### P0-6 · Fix the repo's self-inflicted credibility bugs
-* `keeper/.env.example` points at `CAAAAAAA…D2KM`, a placeholder — it should be the real
-  deployed vault id. A judge who clones and runs the keeper hits this in the first minute.
-* `SECURITY.md` contains **7 raw control characters** (BEL/FF/CR) from an escaping bug:
-  "mount > 0" (was `amount`), "oken_in" (was `token_in`), "ee <= 10%" (was `fee`),
-  "\\\ust" (was ```` ```rust ````), "pm audit" (was `npm audit`). Rewrite the file.
-* `SECURITY.md` §3.1 documents an implementation that no longer exists
-  (`env.invoke_contract(&router, &symbol_short!("swap"), …)` returning `received_out`),
-  while the code uses a balance delta. Docs contradicting code reads worse than no docs —
-  and the balance-delta approach is the *better* story, so tell it.
-* Two diverging copies of `SECURITY.md` (root + `frontend/`). Keep one.
-* `frontend/index.html` still has `<title>frontend</title>`; `frontend/README.md` is still
-  the stock Vite template.
-* No `target/` in the working tree — **run `cargo test` and `cargo build --release
-  --target wasm32-unknown-unknown` before submitting**; nothing in this checkout proves the
-  contract still compiles.
+1. **Portal submission completed before the deadline.** The handbook states that
+   incomplete or unsubmitted entries are not evaluated.
+2. **Track selected.** Judging happens only against tracks chosen at submission time.
+   Genesis caps the team at four and frames the product as built during the event — if any
+   code predates it, separate the starting state from the event's work honestly. Scale has
+   invitation/eligibility conditions; a project *fitting* Scale is not the same as being
+   admitted to it.
+3. **Team name, full names and contact details** filled in.
+4. **Pitch deck built on the official template**, main structure preserved.
 
 ---
 
-## P1 — worth doing if P0 lands early
+## Known limitations — state these before a judge finds them
 
-* **Manual "Execute now" button** for the order owner. The keeper is the product, but a jury
-  that can trigger execution in the browser sees the full lifecycle in 30 seconds instead of
-  waiting for a bot they can't see. Cheap, and it also gives you a live fallback if the
-  keeper dies on stage.
-* **Deploy the keeper** (Fly.io / Railway / a laptop tmux with logs on screen) and show its
-  log during the demo. "How many teams shipped a core feature integration" is a tracked
-  metric; a running keeper is the visible form of that.
-* **Order timestamps + tx hashes on chain** — emit them in events and index them, so history
-  is real.
-* **Stop-loss claim.** README and pitch say "Limit and Stop-Loss"; the contract implements a
-  limit primitive only, and `docs/SPECIFICATION.md` admits it ("not an oracle-based
-  stop-loss"). Either drop the claim or wire **Reflector** (an eligible oracle in the
-  handbook's resources) for a genuine trigger price — the latter is a strong Scale Track
-  story if time allows.
-* **Traction.** The handbook counts *"how many onboarded real users"* during the event. With
-  a live demo URL and the TRY deposit flow, walking five people at the venue through a
-  deposit is realistic — and it is the only criterion you cannot backfill afterwards.
+Volunteering these costs nothing and buys credibility. Each is real.
 
-## P2 — polish
-
-* Mobile layout for the terminal (the grid is desktop-first).
-* Accessibility pass: the UI is 10px mono on dark; contrast and focus rings matter for the UX score.
-* `get_order_count`-then-N-reads is O(n) round trips; batch or paginate before the order
-  list grows.
-* Frontend divides every amount by `STROOPS_PER_XLM` regardless of the asset — fine while
-  everything is 7-decimal, but name the constant accordingly (`STROOPS`) to avoid a trap.
-* `.cursorrules` exists but there is no `CLAUDE.md`/agent-facing doc describing the repo;
-  cheap to add and it reinforces the "Skills and AI tooling" story the handbook rewards.
+- **The executor and the owner are the same account in the proof transaction.** The bounty
+  is genuinely computed by the contract from the observed delta and paid as its own
+  transfer (`14152427` stroops, 100 bps), but the order was self-executed from the dApp.
+  A separately funded keeper would make the split visually obvious.
+- **The anchor is a sandbox.** The bank leg is simulated; the Stellar leg is a real testnet
+  transaction. The client is written against the published SEPs, so the *protocol* surface
+  is portable — but moving to a production anchor is **not** a one-line change. It depends
+  on that provider's KYC requirements (SEP-12 fields), its supported rails and assets, and
+  commercial onboarding. The honest claim is that no anchor-specific logic is hardcoded
+  past the home domain, not that a swap is free.
+- **Testnet only, unaudited.** No mainnet value is at risk. The roadmap schedules an audit
+  scoped to the settlement path, authorization tree and TTL lifecycle.
+- **Order history timestamps** are derived at read time, not emitted by the contract.
+- **`get_order_count`-then-N-reads** is O(n) RPC round trips; fine at this order count,
+  not a design to grow into.
 
 ---
 
-## Submission checklist
+## Resolved — the floor is now a net guarantee
 
-- [ ] Track selected on the portal (you are only judged on tracks chosen at submission) — *organiser portal action*
-- [x] Public GitHub repo + well-structured README
-- [x] Contract IDs documented (vault / USDC SAC / router) with explorer links
-- [x] Live demo URL, reachable from a stranger's laptop
-- [x] Anchor flow demonstrable end-to-end with real tx hashes — *SEP-6 deposit, create_order and cancel_order verified in the README*
-- [ ] One real `execute_order` transaction on testnet — **blocked**: the vault's router slot holds an account, not the Soroswap router. Run `set_router` as admin, then execute once. See the README's known-issue note.
-- [x] Mermaid architecture diagram in the README/docs
-- [x] Stellar Skills cited **by path**
-- [x] `cargo test` green; `cargo build --release --target wasm32-unknown-unknown` clean
-- [ ] Pitch deck built on the official template — *official template not in the repo*
-- [x] Scale Track only: post-hackathon roadmap toward SCF/InstAward
+The earlier deployment checked its minimum against the **gross** fill and deducted the
+keeper bounty afterwards, so an order guarded at 38 paid out 37.62 at 100 bps: the
+guarantee named a figure the owner never received.
+
+The current contract stores `min_user_out` and checks it against the amount actually
+transferred to the owner, raising the router's own minimum to the gross that leaves the
+floor standing once the bounty is taken (rounding up, so truncation cannot land a stroop
+short). `create_order` refuses an order whose floor could never be met before it takes
+any collateral. Six regression tests cover it, including the exact boundary, the tightest
+passing fill, a fill that clears gross but not net, and the maximum fee — 17 pass in all.
+
+This shipped: vault `CAVF2IT2…R4HWP2INT`, proven by
+[`3b2e80ce…`](https://stellar.expert/explorer/testnet/tx/3b2e80cef75ab2381ffef82c7421f1e43bd132fbc62740746c7b5a4c612080ef),
+where the owner's 10.4303860 USDC is checked against a 10.0089550 USDC floor.
+
+`frontend/src/vaults.ts` records the minimum's semantics per vault, so the console can say
+truthfully which guarantee an order was written under rather than reinterpreting old
+orders under new rules.
+
+---
+
+## Pre-submission sequence
+
+1. Confirm sandbox-anchor acceptability and **track eligibility** with the organisers.
+2. Finish the deck on the official template; fill every portal field.
+3. **Set `VITE_VAULT_CONTRACT_ID` to `CAVF2IT2…R4HWP2INT` in the Vercel project
+   environment** and redeploy — the repository is updated, the hosted environment is not.
+4. Open <https://trigger-vault-mu.vercel.app> in a clean browser profile and walk the
+   judge's path end to end.
+5. Freeze the submission commit.

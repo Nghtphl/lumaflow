@@ -44,6 +44,8 @@ import { formatUsdcPrice, limitComparator } from "./lib/price";
 import { fetchOracleQuote } from "./oracle/reflector";
 import type { OracleQuote } from "./oracle/reflector";
 import { ROUTES } from "./routes";
+import { ACTIVE_VAULT, VAULTS, orderKey } from "./vaults";
+import type { MinimumSemantics } from "./vaults";
 import { LandingPage } from "./pages/LandingPage";
 import { AppBackground } from "./components/layout/AppBackground";
 import { Footer } from "./components/layout/Footer";
@@ -100,7 +102,6 @@ const usdcToken = new Contract(USDC_SAC);
 const READ_ONLY_SOURCE =
   "GBICM7WA6FIVCFRCPM3ZIGNF5CZC5VRCU4IV4DJPQLWIALVQ6IN6OI6A";
 const server = new rpc.Server(RPC_URL);
-const vault = new Contract(CONTRACT_ID);
 const EXPLORER_BASE = "https://stellar.expert/explorer/testnet";
 const NETWORK_LABEL = "Stellar Testnet";
 
@@ -155,6 +156,12 @@ const tokenSymbolFromContract = (contractId: string): TokenSymbol | "TOKEN" =>
 
 interface OrderItem {
   id: number;
+  /** Which deployment this order lives in. Ids restart at 1 in each. */
+  vaultId: string;
+  vaultLabel: string;
+  semantics: MinimumSemantics;
+  /** Cancellable everywhere; only the accepting vault can still execute. */
+  executable: boolean;
   owner: string;
   amountIn: number;
   minAmountOut: number;
@@ -236,13 +243,17 @@ const parseDecimal = (value: string): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-async function simulateRead<T>(method: string, ...args: xdr.ScVal[]): Promise<T> {
+async function simulateReadOn<T>(
+  contractId: string,
+  method: string,
+  ...args: xdr.ScVal[]
+): Promise<T> {
   const source = new Account(READ_ONLY_SOURCE, "0");
   const transaction = new TransactionBuilder(source, {
     fee: BASE_FEE,
     networkPassphrase: NETWORK_PASSPHRASE,
   })
-    .addOperation(vault.call(method, ...args))
+    .addOperation(new Contract(contractId).call(method, ...args))
     .setTimeout(30)
     .build();
   const simulation = await server.simulateTransaction(transaction);
@@ -407,13 +418,15 @@ function App() {
     updatedAt: null,
   });
   const [refreshing, setRefreshing] = useState(false);
+  /** Deployments the RPC could not read this cycle, named rather than hidden. */
+  const [unreadableVaults, setUnreadableVaults] = useState<string[]>([]);
   const [lifecycle, setLifecycle] = useState<LifecycleState>("idle");
   const [lifecycleStep, setLifecycleStep] = useState(-1);
   const [message, setMessage] = useState("");
   const [notices, setNotices] = useState<Notice[]>([]);
   const noticeId = useRef(0);
   const operationLock = useRef(false);
-  const observedAt = useRef(new Map<number, string>());
+  const observedAt = useRef(new Map<string, string>());
   const hasLoadedOrders = useRef(false);
 
   const location = useLocation();
@@ -562,37 +575,74 @@ function App() {
     [safeOrders],
   );
 
-  const fetchOrders = async (): Promise<void> => {
-    const count = await simulateRead<number>("get_order_count");
+  /** Reads one deployment. Throws so the caller can report it on its own. */
+  const fetchVaultOrders = async (
+    vault: (typeof VAULTS)[number],
+  ): Promise<OrderItem[]> => {
+    const count = await simulateReadOn<number>(vault.id, "get_order_count");
     if (!Number.isSafeInteger(count) || count < 0 || count > 10_000) {
       throw new Error(`Invalid on-chain order count: ${safeMessage(count)}`);
     }
-    const liveOrders = await Promise.all(
+    return Promise.all(
       Array.from({ length: count }, async (_, index) => {
-        const raw = await simulateRead<Record<string, unknown>>(
+        const raw = await simulateReadOn<Record<string, unknown>>(
+          vault.id,
           "get_order",
           xdr.ScVal.scvU32(index + 1),
         );
         const status = Number(raw.status);
+        // The net-floor build renamed the field; older deployments still store
+        // the gross one. `semantics` is what says which promise it carries.
+        const minimum = (raw.min_user_out ?? raw.min_amount_out) as bigint;
         return {
           id: Number(raw.id),
+          vaultId: vault.id,
+          vaultLabel: vault.label,
+          semantics: vault.semantics,
+          executable: vault.accepting,
           owner: String(raw.owner),
           tokenIn: String(raw.token_in),
           tokenOut: String(raw.token_out),
           amountIn: Number(raw.amount_in as bigint) / STROOPS_PER_XLM,
-          minAmountOut: Number(raw.min_amount_out as bigint) / STROOPS_PER_XLM,
+          minAmountOut: Number(minimum) / STROOPS_PER_XLM,
           feeBps: Number(raw.fee_bps),
           status: status === 0 ? "Active" : status === 1 ? "Executed" : "Cancelled",
           observedAt: null,
         } satisfies OrderItem;
       }),
     );
+  };
+
+  const fetchOrders = async (): Promise<void> => {
+    // One deployment failing must not blank the others: a vault that cannot be
+    // read is named as unreadable rather than silently dropping the orders —
+    // and the collateral — it still holds.
+    const results = await Promise.allSettled(VAULTS.map(fetchVaultOrders));
+
+    const unreadable = VAULTS.filter(
+      (_, index) => results[index].status === "rejected",
+    ).map((vault) => vault.label);
+    setUnreadableVaults(unreadable);
+
+    if (unreadable.length === VAULTS.length) {
+      throw new Error(
+        results[0].status === "rejected"
+          ? safeMessage(results[0].reason)
+          : "No vault could be read",
+      );
+    }
+
+    const liveOrders = results.flatMap((result) =>
+      result.status === "fulfilled" ? result.value : [],
+    );
+
     // Record a real observation time for orders that appear while the terminal
     // is open; orders that predate this session stay honest about not knowing.
     const seenAt = new Date().toISOString();
     for (const order of liveOrders) {
-      if (hasLoadedOrders.current && !observedAt.current.has(order.id)) {
-        observedAt.current.set(order.id, seenAt);
+      const key = orderKey(order.vaultId, order.id);
+      if (hasLoadedOrders.current && !observedAt.current.has(key)) {
+        observedAt.current.set(key, seenAt);
       }
     }
     hasLoadedOrders.current = true;
@@ -600,7 +650,7 @@ function App() {
       liveOrders
         .map((order) => ({
           ...order,
-          observedAt: observedAt.current.get(order.id) || null,
+          observedAt: observedAt.current.get(orderKey(order.vaultId, order.id)) || null,
         }))
         .reverse(),
     );
@@ -928,6 +978,7 @@ function App() {
   };
 
   const submitContractOperation = async (
+    contractId: string,
     method: string,
     args: xdr.ScVal[],
   ): Promise<string> => {
@@ -939,7 +990,7 @@ function App() {
       fee: BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
     })
-      .addOperation(vault.call(method, ...args))
+      .addOperation(new Contract(contractId).call(method, ...args))
       .setTimeout(60)
       .build();
 
@@ -1039,7 +1090,7 @@ function App() {
 
     operationLock.current = true;
     try {
-      const hash = await submitContractOperation("create_order", [
+      const hash = await submitContractOperation(ACTIVE_VAULT.id, "create_order", [
         Address.fromString(walletAddress).toScVal(),
         Address.fromString(tokenIn).toScVal(),
         Address.fromString(tokenOut).toScVal(),
@@ -1085,7 +1136,10 @@ function App() {
     }
   };
 
-  const cancelOrder = async (id: number): Promise<void> => {
+  // Takes the order rather than an id: ids repeat across deployments, and a
+  // cancellation sent to the wrong vault would either fail or, worse, cancel a
+  // different owner's order that happens to share the number.
+  const cancelOrder = async (order: OrderItem): Promise<void> => {
     if (!walletAddress) {
       setConnectModalOpen(true);
       return;
@@ -1093,13 +1147,11 @@ function App() {
     if (operationLock.current) return;
     operationLock.current = true;
     setMessage("");
-    const cancelledOrder = safeOrders.find((order) => order.id === id);
-    const reclaimed = cancelledOrder?.amountIn || 0;
-    const reclaimedSymbol = cancelledOrder
-      ? tokenSymbolFromContract(cancelledOrder.tokenIn)
-      : "TOKEN";
+    const id = order.id;
+    const reclaimed = order.amountIn;
+    const reclaimedSymbol = tokenSymbolFromContract(order.tokenIn);
     try {
-      const hash = await submitContractOperation("cancel_order", [
+      const hash = await submitContractOperation(order.vaultId, "cancel_order", [
         xdr.ScVal.scvU32(id),
       ]);
       await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
@@ -1139,16 +1191,20 @@ function App() {
     }
   };
 
-  const executeOrder = async (id: number): Promise<void> => {
+  const executeOrder = async (order: OrderItem): Promise<void> => {
     if (!walletAddress) {
       setConnectModalOpen(true);
       return;
     }
+    // Retired deployments are read-and-cancel. Their owners reclaim and place
+    // again here; nothing settles against a version that is being wound down.
+    if (!order.executable) return;
     if (operationLock.current) return;
     operationLock.current = true;
     setMessage("");
+    const id = order.id;
     try {
-      const hash = await submitContractOperation("execute_order", [
+      const hash = await submitContractOperation(order.vaultId, "execute_order", [
         xdr.ScVal.scvU32(id),
         Address.fromString(walletAddress).toScVal(),
       ]);
@@ -1532,7 +1588,7 @@ function App() {
           <SectionHeading
             eyebrow="Execution queue"
             title="Global orders"
-            description="Every resting and settled order in the vault, read straight from the contract."
+            description={`Every resting and settled order across ${VAULTS.length} vault deployments, read straight from each contract.`}
             action={
               <a
                 href={contractUrl}
@@ -1577,6 +1633,17 @@ function App() {
             </Button>
           </div>
 
+          {unreadableVaults.length > 0 ? (
+            <p
+              key="unreadable-vaults"
+              className="mt-4 rounded-md border border-negative/35 bg-negative-soft px-3 py-2 text-footnote text-negative-ink"
+            >
+              {unreadableVaults.join(", ")} could not be read this cycle. Orders
+              held there — including any collateral of yours — are missing from
+              the list below, not settled or cancelled.
+            </p>
+          ) : null}
+
           {visibleOrders.length > 0 ? (
             <Reveal stagger className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {visibleOrders.map((order) => {
@@ -1595,8 +1662,11 @@ function App() {
                     : order.amountIn * orderTryPerXlm;
                 return (
                   <OrderCard
-                    key={order.id.toString()}
+                    key={orderKey(order.vaultId, order.id)}
                     id={order.id}
+                    vaultLabel={order.vaultLabel}
+                    semantics={order.semantics}
+                    executable={order.executable}
                     owner={order.owner}
                     ownerLabel={shortAddress(order.owner, 8, 6)}
                     status={order.status}
@@ -1614,8 +1684,8 @@ function App() {
                     isOwn={connected && order.owner === walletAddress}
                     canCancel={!connected || order.owner === walletAddress}
                     busy={busy}
-                    onCancel={() => void cancelOrder(order.id)}
-                    onExecute={() => void executeOrder(order.id)}
+                    onCancel={() => void cancelOrder(order)}
+                    onExecute={() => void executeOrder(order)}
                   />
                 );
               })}

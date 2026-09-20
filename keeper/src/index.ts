@@ -38,7 +38,7 @@ type VaultOrder = {
   token_in: string;
   token_out: string;
   amount_in: bigint;
-  min_amount_out: bigint;
+  min_user_out: bigint;
   fee_bps: number;
   status: number;
 };
@@ -121,11 +121,25 @@ class TriggerVaultKeeper {
           "get_order",
           xdr.ScVal.scvU32(orderId),
         );
+        // Retired deployments store a gross floor under a different name. The
+        // keeper settles only where the guarantee is the owner's net payout, so
+        // a vault carrying the old schema is refused outright rather than
+        // executed on terms its owners never agreed to.
+        if (order.min_user_out === undefined) {
+          console.error(
+            `Refusing to run: ${VAULT_CONTRACT_ID} stores a gross minimum ` +
+              `(min_amount_out). This keeper only settles vaults that guarantee ` +
+              `the owner's net payout. Point VAULT_CONTRACT_ID at the current vault.`,
+          );
+          this.running = false;
+          return;
+        }
+
         if (order.status !== 0) continue;
 
         console.log(
           `Active order #${order.id} | owner=${order.owner} | ` +
-            `amount=${order.amount_in} | minOut=${order.min_amount_out} | ` +
+            `amount=${order.amount_in} | minOut=${order.min_user_out} | ` +
             `fee=${order.fee_bps}bps`,
         );
         if (this.keypair) await this.executeOrder(order);

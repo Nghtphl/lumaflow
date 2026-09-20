@@ -60,7 +60,7 @@ env.authorize_as_current_contract(vec![
 
 3. after the swap the vault asserts the input actually left exactly once
    (`Error::InputNotSpent`, new) **and** that the realized `token_out` balance delta covers
-   `min_amount_out` (`Error::SlippageExceeded`, unchanged).
+   `min_user_out` (`Error::SlippageExceeded`, unchanged).
 
 The authorization is scoped to one token, one recipient and one amount, and carries no
 sub-invocations of its own. A wrong pool address cannot redirect anything: the router
@@ -168,7 +168,7 @@ MIN_OUT=<95% of the quote from step 5>
 
 stellar contract invoke --id "$VAULT_ID" --source trigger-deployer --network testnet \
   -- create_order --owner "$ACCOUNT" --token_in "$XLM" --token_out "$TOKEN_OUT" \
-     --amount_in 100000000 --min_amount_out "$MIN_OUT" --fee_bps 100
+     --amount_in 100000000 --min_user_out "$MIN_OUT" --fee_bps 100
 
 stellar contract invoke --id "$VAULT_ID" --source trigger-deployer --network testnet \
   -- execute_order --order_id 1 --executor "$ACCOUNT"
@@ -206,8 +206,8 @@ Record in the README: **contract id, execution tx hash, router address, pair add
 | `UnexpectedSize` / decode error on `router_pair_for` | The router address is wrong or Soroswap redeployed | Re-check `public/testnet.contracts.json`, then `set_router` |
 | Execution fails with an auth error | The pool the router used differs from the one authorized — usually a stale router/factory pair | Verify `router_pair_for` returns the same pair the explorer shows for the swap |
 | `Error(Contract, #11)` — `InputNotSpent` | The router returned without taking the input (wrong router, or a non-Soroswap contract) | Confirm `get_router` points at the Soroswap router |
-| `Error(Contract, #6)` — `SlippageExceeded` | Price moved, or `min_amount_out` set from a stale quote | Re-quote with `router_get_amounts_out` and use ~95% of it |
-| `InsufficientOutputAmount` from the router | The router's own limit check fired first | Same fix — lower `min_amount_out` |
+| `Error(Contract, #6)` — `SlippageExceeded` | Price moved, or `min_user_out` set from a stale quote | Re-quote with `router_get_amounts_out` and use ~95% of it |
+| `InsufficientOutputAmount` from the router | The router's own limit check fired first | Same fix — lower `min_user_out` |
 | `cargo test` fails to resolve `soroban-sdk` | Offline / no registry access | Run it on a networked machine; the crate must be fetched once |
 | `stellar contract build` cannot find the target | `wasm32-unknown-unknown` not installed | `rustup target add wasm32-unknown-unknown` |
 | Trustline error on `create_order` with a classic asset | The account holding the asset needs a trustline | `stellar tx new change-trust …`, or use XLM |

@@ -36,17 +36,31 @@ export function TelemetryBar({
   refreshing,
   onRefresh,
 }: TelemetryBarProps) {
+  // No probe has resolved yet. `healthy` is false at mount, so rendering it
+  // directly makes the first paint accuse the network of being down before
+  // anything has been asked of it. `updatedAt` is written on both the success
+  // and the failure path, so its absence — and only its absence — means
+  // "still asking".
+  const pending = updatedAt === null;
+
   return (
     <div>
       <div className="flex items-center justify-between gap-3 border-b border-line pb-3">
         <div className="flex min-w-0 items-center gap-2">
           <Waves
-            className={cn("size-3.5 shrink-0", healthy ? "text-accent-ink" : "text-ink-4")}
+            className={cn(
+              "size-3.5 shrink-0",
+              healthy && !pending ? "text-accent-ink" : "text-ink-4",
+            )}
             strokeWidth={2}
             aria-hidden="true"
           />
           <span className="truncate text-caption uppercase text-ink-3">
-            {healthy ? "Soroban RPC connected" : "Soroban RPC unreachable"}
+            {pending
+              ? "Soroban RPC connecting"
+              : healthy
+                ? "Soroban RPC connected"
+                : "Soroban RPC unreachable"}
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -75,7 +89,7 @@ export function TelemetryBar({
               format={(value) => `${Math.round(value)} ms`}
             />
           }
-          meta={healthy ? "Healthy" : "Last probe failed"}
+          meta={pending ? "Probing" : healthy ? "Healthy" : "Last probe failed"}
         />
         <Stat
           className="sm:border-l sm:border-line sm:pl-5"

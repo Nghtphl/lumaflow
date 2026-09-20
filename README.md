@@ -3,7 +3,7 @@
 > **Autonomous FX Hedging & Non-Custodial Order Settlement on Stellar**
 > Built for the Rise In × Stellar Pro Hackathon 2026.
 
-**[▶ Live demo](https://trigger-vault-mu.vercel.app)** · [Vault contract on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD) · Stellar Testnet
+**[▶ Live demo](https://trigger-vault-mu.vercel.app)** · [Vault contract on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) · Stellar Testnet
 
 ---
 
@@ -25,16 +25,19 @@ think in stablecoins.
 | | Address / URL |
 | --- | --- |
 | **dApp** | <https://trigger-vault-mu.vercel.app> |
-| **Vault contract** | [`CDVJV6SI…WK3BNTWD`](https://stellar.expert/explorer/testnet/contract/CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD) |
-| **USDC SAC** (collateral) | [`CBIELTK6…HMXQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
+| **Vault contract** | [`CAVF2IT2…R4HWP2INT`](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) |
+| **USDC SAC** | [`CBIELTK6…HMXQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
 | **USDC issuer** | [`GBBD47IF…3ZLLFLA5`](https://stellar.expert/explorer/testnet/account/GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5) |
-| **Native XLM SAC** (target) | [`CDLZFC3S…U2HHGCYSC`](https://stellar.expert/explorer/testnet/contract/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC) |
+| **Native XLM SAC** | [`CDLZFC3S…U2HHGCYSC`](https://stellar.expert/explorer/testnet/contract/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC) |
 | **Soroswap router** | [`CCJUD55A…64UZZE7BRD`](https://stellar.expert/explorer/testnet/contract/CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD) |
 | **TRY anchor** (sandbox) | <https://tr-mock-anchor.fly.dev> — SEP-1/6/10/12/38 |
 
 > The anchor is a **sandbox** TRY anchor: the bank leg is simulated, the Stellar leg is a
-> real testnet transaction. The client is written against the published SEPs and is
-> portable to a production anchor by changing one home domain.
+> real testnet transaction. The client is written against the published SEPs and holds no
+> anchor-specific logic past the home domain — discovery, auth, rails and quotes are all
+> read from the anchor's own TOML and `/info`. Moving to a production anchor is a
+> configuration change on our side, but it is gated on that provider's KYC requirements,
+> supported rails and commercial onboarding, not on a one-line edit.
 
 ### Verified on-chain
 
@@ -44,29 +47,77 @@ Soroban RPC and Horizon rather than from the UI.
 | Step | Transaction |
 | --- | --- |
 | **SEP-6 deposit** — anchor pays out 61.1895780 USDC | [`65434cdf…411d66`](https://stellar.expert/explorer/testnet/tx/65434cdf31f19aa23d6408da4c3b6bf32587f3a169fadfa4088e44bbdb411d66) |
-| **WASM upload** — `0d2c7cf0…a8e204` | [`b8c53bb1…4fe6bd`](https://stellar.expert/explorer/testnet/tx/b8c53bb15644d59526f848a2ca49091714b570902b2d85d6f7af5389d14fe6bd) |
-| **Contract deployment** | [`22715530…c86bf4`](https://stellar.expert/explorer/testnet/tx/22715530651a5d2e3baca9fcf9db63aa0627f2dfe9bbc471b87e869d91c86bf4) |
-| **`init`** — admin + Soroswap router | [`af3e4dd3…db31f9`](https://stellar.expert/explorer/testnet/tx/af3e4dd33cce67b188c6000fc3125b60d90765ea0fe7cf3051b4a93f2fdb31f9) |
-| **`create_order`** | _pending on this instance_ |
-| **`execute_order`** | _pending on this instance_ |
+| **WASM upload** — `d9ad61c2…10142c` | [`4c7caedb…f67d5d`](https://stellar.expert/explorer/testnet/tx/4c7caedb946665fd72275ba4b2da4b70e709f2f9ff7c9c05b144c403e1f67d5d) |
+| **Contract deployment** | [`b89acbde…e049f0`](https://stellar.expert/explorer/testnet/tx/b89acbde43a36151551139de7f9629a8763a8f91ac8bd4ac2abd903c15e049f0) |
+| **`init`** — admin + Soroswap router | [`3dbdbdce…2343a5`](https://stellar.expert/explorer/testnet/tx/3dbdbdce447fc153728760dbc78a6760512ae5534c9571f28afec62c652343a5) |
+| **`create_order`** — 100 XLM escrowed, net floor 10.0089550 USDC, 100 bps bounty | [`b259cb51…8f4f82`](https://stellar.expert/explorer/testnet/tx/b259cb518287aca4e13efc1390cb24c4639c5cec0ffbaea4b4c50b70e18f4f82) |
+| **`execute_order`** — real Soroswap fill, 10.5357430 USDC realised | [`3b2e80ce…2080ef`](https://stellar.expert/explorer/testnet/tx/3b2e80cef75ab2381ffef82c7421f1e43bd132fbc62740746c7b5a4c612080ef) |
 
-The on-chain WASM hash matches the local `cargo build --release` output byte for byte,
-so the code above is the code these 11 tests cover.
+#### What `3b2e80ce…` actually did
+
+The settlement transaction is the whole thesis in one ledger entry. Decoded from its
+contract events, in order:
+
+| Event | Amount | Meaning |
+| --- | --- | --- |
+| `transfer` XLM — vault → Soroswap pair | `100000000` (100.0000000) | The router **pulled** the input under a scoped sub-invocation. The vault never approved a blanket allowance. |
+| `transfer` USDC — Soroswap pair → vault | `10535743` (10.5357430) | The fill arrives at the vault, not at the user. |
+| `SoroswapPair` `sync` / `swap` | `amount_1_in 100000000`, `amount_0_out 10535743` | A real pool — [`CCBX3NZT…`](https://stellar.expert/explorer/testnet/contract/CCBX3NZTCQLQFSPG7HBOKL4P2RVPOPVFHDNRTOSCCJWBTPL2GHEH7RQS), not a mock. |
+| `SoroswapRouter` `swap` | `path [XLM SAC, USDC SAC]` | Emitted by [`CCJUD55A…`](https://stellar.expert/explorer/testnet/contract/CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD), the published Soroswap testnet router. |
+| `transfer` USDC — vault → executor | `105357` (0.1053570) | Keeper bounty: 100 bps of the **observed delta**. |
+| `transfer` USDC — vault → owner | `10430386` (10.4303860) | Net proceeds to the order's owner. |
+| `order` `execute` | `(1, executor, 10535743, 105357)` | The vault's own receipt: order id, who executed, gross realised, bounty paid. |
+
+`105357 + 10430386 = 10535743` — the two payouts reconcile exactly against the balance
+delta the contract measured. The order's floor was **10.0089550 USDC net**, and the owner
+received 10.4303860: the guarantee is checked against the figure that actually reached the
+wallet, not against the swap output the bounty is later carved from. The order's on-chain
+`status` is now `Executed`.
+
+> **Read honestly:** in this transaction the executor and the owner are the same account,
+> because the order was created and settled by the same key while proving the deployment.
+> The bounty is a real, separate transfer computed by the contract — but a distinct keeper
+> address would make the split visually obvious. `keeper/` runs the same `execute_order`
+> call with its own key.
+
+The on-chain WASM hash `d9ad61c2…10142c` matches the local `cargo build --release` output
+byte for byte, so the code above is the code these 17 tests cover. Verify it yourself:
+
+```bash
+cd contracts/vault && cargo build --release --target wasm32-unknown-unknown
+shasum -a 256 target/wasm32-unknown-unknown/release/trigger_vault.wasm
+stellar contract fetch --id CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT \
+  --network testnet --out-file onchain.wasm && shasum -a 256 onchain.wasm
+```
 
 <details>
-<summary>Previous contract instance (<code>CDERIBD7…GYQMPB</code>)</summary>
+<summary>Earlier contract instances — and why the console still lists them</summary>
 
-The first deployment carried an earlier build whose settlement path pushed collateral to
-the router before swapping. Soroswap does not take custody — it pulls from the order's
-owner — so execution always reverted on an authorization mismatch, and no `execute_order`
-ever succeeded there. Order creation and cancellation did work, and those transactions
-remain valid history:
+Order ids restart at 1 in every deployment, and collateral does not move when a new one
+goes up. Retiring a vault by pointing a constant at a new address would quietly orphan
+whatever the old one still holds, so `frontend/src/vaults.ts` keeps a **list**: earlier
+vaults stay readable and cancellable, and only the newest accepts new orders.
+
+**V1 — [`CDVJV6SI…WK3BNTWD`](https://stellar.expert/explorer/testnet/contract/CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD)** · four resting orders · *gross* minimum
+
+Fully working, and its settlement is real: `execute_order`
+[`7b135e3d…578179`](https://stellar.expert/explorer/testnet/tx/7b135e3dfd76175b746bb015d3eb03e806dd23997979b26d3f8fce9ca0578179)
+swapped 15 USDC for 141.5242761 XLM through the same Soroswap router, paying a
+1.4152427 XLM bounty and 140.1090334 XLM to the owner. It was replaced because its
+minimum guarded the **swap output** rather than the payout: an order guarded at 38 paid
+37.62 at 100 bps. The four orders still resting there remain cancellable by their owners.
+
+**V0 — [`CDERIBD7…GYQMPB`](https://stellar.expert/explorer/testnet/contract/CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB)** · *gross* minimum · never settled
+
+The first deployment pushed collateral to the router before swapping. Soroswap does not
+take custody — it pulls from the order's owner — so execution always reverted on an
+authorization mismatch and no `execute_order` ever succeeded there. Creation and
+cancellation did work:
 
 - `create_order` — [`1352efc1…68ec5a`](https://stellar.expert/explorer/testnet/tx/1352efc105fbdbc48b2ff2c739af941473f36b0382ab48ba27e9e9e06868ec5a)
 - `cancel_order` — [`a16bf08b…a39909`](https://stellar.expert/explorer/testnet/tx/a16bf08ba88b093c15a4ce7a424bf427cf6dd597467729d60e419321baa39909)
 
-Collateral in the ten orders left on that instance is still reclaimable by its owners
-through `cancel_order`.
+Collateral left on that instance is still reclaimable through `cancel_order`.
 
 </details>
 
@@ -123,8 +174,10 @@ The one design decision worth defending to a jury:
 
 **The vault does not trust the router's return value.** `execute_order` reads the
 contract's own `token_out` balance before and after the swap and uses the *observed
-delta* as the realised output. If that delta is below `min_amount_out`, the whole
-transaction reverts. A router that reports a good fill while delivering less, or one
+delta* as the realised output. The keeper bounty is taken from that delta, and what
+remains is checked against `min_user_out` — the floor is a promise about the amount that
+reaches the owner's wallet, not about the swap. If the owner's share falls short, the
+whole transaction reverts. A router that reports a good fill while delivering less, or one
 that pays out without ever taking the input, both fail — and there is a regression test
 for each (`test_slippage_uses_actual_received_balance_and_reverts_atomically`,
 `test_rejects_router_that_does_not_take_the_input`).
@@ -134,7 +187,11 @@ Other properties:
 - **Non-custodial.** Collateral sits in the vault under the order's owner. `cancel_order`
   refunds 100% and only the creator can call it.
 - **Bounded bounty.** The keeper reward is computed from the observed delta and capped at
-  1,000 bps (10%).
+  1,000 bps (10%). Because the floor is net, raising the bounty never quietly erodes the
+  owner's guarantee — it raises the fill the order needs to settle at all.
+- **Unsatisfiable orders are refused up front.** `create_order` derives the gross fill its
+  floor would require and rejects the order if that cannot be represented, so collateral is
+  never escrowed against a promise the contract already knows it cannot keep.
 - **Scoped authorization.** The router's pull of the input is authorized through a scoped
   sub-invocation, not a blanket approval.
 - **TTL managed.** Persistent entries target a ~120-day TTL, renewed under ~30 days.
@@ -163,7 +220,7 @@ Opens on <http://localhost:5173>. Requires [Freighter](https://freighter.app) se
 
 ```bash
 cd contracts/vault
-cargo test                                              # 11 tests
+cargo test                                              # 17 tests
 cargo build --release --target wasm32-unknown-unknown   # deployable wasm
 ```
 
@@ -210,7 +267,7 @@ Index: <https://skills.stellar.org/>
 ## Repository map
 
 ```
-contracts/vault/   Soroban limit-order vault (Rust, no_std) + 11 tests
+contracts/vault/   Soroban limit-order vault (Rust, no_std) + 17 tests
 frontend/          React 19 + Vite dApp; anchor/ holds the SEP client
 keeper/            Executor bot that settles orders when the rate is reachable
 docs/              Architecture, spec, anchor integration, testnet runbook

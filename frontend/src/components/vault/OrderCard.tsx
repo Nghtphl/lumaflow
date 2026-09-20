@@ -5,6 +5,12 @@ import { Button } from "../ui/Button";
 
 export interface OrderCardProps {
   id: number;
+  /** Which deployment the order lives in — ids repeat across them. */
+  vaultLabel: string;
+  /** Whether the stored minimum is guarded before or after the keeper bounty. */
+  semantics: "gross" | "net";
+  /** Retired deployments are read-and-cancel; only the current one settles. */
+  executable: boolean;
   owner: string;
   ownerLabel: string;
   status: "Active" | "Executed" | "Cancelled";
@@ -58,6 +64,9 @@ const STATUS_LABEL = {
  */
 export function OrderCard({
   id,
+  vaultLabel,
+  semantics,
+  executable,
   ownerLabel,
   status,
   unfillableReason,
@@ -80,7 +89,9 @@ export function OrderCard({
       <header className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h3 className="font-mono text-callout font-medium text-ink">#{id}</h3>
+            <h3 className="font-mono text-callout font-medium text-ink">
+              {vaultLabel}·#{id}
+            </h3>
             {status === "Active" && unfillableReason ? (
               <Badge
                 tone="warning"
@@ -124,7 +135,9 @@ export function OrderCard({
           ) : null}
         </div>
         <div className="min-w-0 text-right">
-          <p className="text-caption uppercase text-ink-4">Minimum output</p>
+          <p className="text-caption uppercase text-ink-4">
+            {semantics === "net" ? "Minimum you receive" : "Minimum swap output"}
+          </p>
           <p className="mt-1 truncate font-mono text-subhead tnum text-ink">
             {minAmountOut.toFixed(4)}
             <span className="ml-1 text-footnote text-ink-3">{outputSymbol}</span>
@@ -145,19 +158,33 @@ export function OrderCard({
       <footer className="mt-4 flex flex-wrap items-center justify-between gap-x-5 gap-y-2 border-t border-line pt-3">
         <span className="font-mono text-caption tnum text-ink-4">
           Keeper bounty {(feeBps / 100).toFixed(2)}%
+          <span className="ml-1 font-sans text-ink-4">
+            {semantics === "net"
+              ? "· already excluded from the minimum"
+              : "· deducted from the minimum above"}
+          </span>
         </span>
         {status === "Active" ? (
           <div className="flex flex-wrap items-center justify-end gap-5">
-            <Button
-              size="sm"
-              variant="quiet"
-              disabled={busy || unfillableReason !== null}
-              onClick={onExecute}
-              title={unfillableReason ?? undefined}
-              icon={<Zap className="size-3.5" strokeWidth={2.25} aria-hidden="true" />}
-            >
-              Execute
-            </Button>
+            {executable ? (
+              <Button
+                size="sm"
+                variant="quiet"
+                disabled={busy || unfillableReason !== null}
+                onClick={onExecute}
+                title={unfillableReason ?? undefined}
+                icon={<Zap className="size-3.5" strokeWidth={2.25} aria-hidden="true" />}
+              >
+                Execute
+              </Button>
+            ) : (
+              <span
+                className="text-caption text-ink-4"
+                title={`${vaultLabel} is no longer used for new orders. Cancel to reclaim your collateral, then place again on the current vault.`}
+              >
+                Retired — cancel to reclaim
+              </span>
+            )}
             {canCancel ? (
               <Button
                 size="sm"

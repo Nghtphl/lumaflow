@@ -124,7 +124,7 @@ flowchart TD
     subgraph SN["Stellar Testnet"]
         USDC["USDC (Circle testnet issuer)"]
         SAC["USDC Stellar Asset Contract"]
-        V["TriggerVault (Soroban)<br/>CDVJV6SI…"]
+        V["TriggerVault (Soroban)<br/>CAVF2IT2…"]
         DEX["Soroswap Router"]
     end
 
@@ -160,7 +160,7 @@ Create `frontend/.env.example` (and a real `.env.local`), and document every var
 
 ```dotenv
 # Existing
-VITE_VAULT_CONTRACT_ID=CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD
+VITE_VAULT_CONTRACT_ID=CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT
 VITE_RPC_URL=https://soroban-testnet.stellar.org
 
 # Anchor (SEP-1 discovery does the rest)
@@ -335,7 +335,7 @@ GET  {quoteServer}/price?sell_asset=iso4217:TRY&buy_asset=stellar:USDC:{issuer}&
 POST {quoteServer}/quote        (Bearer jwt)  → { id, price, expires_at }
 ```
 
-* show "Target: 1 XLM = **7.50 TL**" in the form, convert to `min_amount_out` on chain;
+* show "Target: 1 XLM = **7.50 TL**" in the form, convert to `min_user_out` on chain;
 * display every order in the table with both its on-chain limit and its TRY equivalent;
 * label the rate source honestly ("Reflector USD/TRY + anchor spread, quoted at {time}").
 
