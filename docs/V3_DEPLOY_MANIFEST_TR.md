@@ -36,9 +36,10 @@ değişmemiş.
 **Optimize uyarısı.** `stellar contract upload` ve `deploy`, `--optimize`
 varsayılanı `true` ile çalışır ve zincire **farklı** bir artefakt yükler:
 22 696 bayt, SHA-256 `92722aeeeafe5ae3061abcf0eac68e9f52191923916a8d6d7a15b1e715101435`.
-Öneri: `--optimize=false` ile yükleyip zincirdeki hash'i CLAUDE.md'deki
-derleme komutuyla yeniden üretilebilir tutmak. 2,3 KB'lik ücret farkı,
-doğrulanabilirlik karşısında ucuzdur. Bu bir karardır, §7'de sorulur.
+**Karar: `--optimize=false`.** Zincirdeki hash, CLAUDE.md'deki
+`cargo build --release --target wasm32-unknown-unknown` komutuyla birebir
+yeniden üretilebilir kalır. 2,3 KB'lik ücret farkı, doğrulanabilirlik
+karşısında ucuzdur.
 
 ## 3. Constructor parametreleri
 
@@ -83,12 +84,14 @@ yine reddeder. Testnet için makul; üretim için yeniden ölçülmelidir.
 | --- | --- |
 | `collateral_token` (satılan) | XLM SAC `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
 | `payout_token` (alınan) | USDC SAC `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
-| `max_amount_in` | **öneri: 500 000 000 stroop = 50.0000000 XLM** |
+| `max_amount_in` | **karar: 100 000 000 stroop = 10.0000000 XLM** |
 
-`max_amount_in` kontratta **kalıcı olarak sabittir**; setter yoktur. Test için
-düşük tutulması, bir hata durumunda zincirde kilitlenebilecek teminatı sınırlar.
-50 XLM, önerilen 3 XLM'lik test emirlerinden 16 kat büyüktür — yani test
-alanı bırakır ama üretim büyüklüğü vaat etmez.
+`max_amount_in` kontratta **kalıcı olarak sabittir**; setter yoktur. Sınır
+**emir başınadır**, toplam değil: 3 XLM'lik iki test emri ayrı ayrı sığar.
+10 XLM, bir hata durumunda tek bir emirde zincirde kilitlenebilecek teminatı
+sınırlar ve bu dağıtımın bir test dağıtımı olduğunu kendi parametresiyle
+söyler. Daha büyük emir gerekirse yeni bir dağıtım gerekir — bu, sınırın
+amacıdır, eksikliği değil.
 
 ## 4. Canlı fiyat okumaları (20 Eylül 11:04)
 
@@ -194,13 +197,25 @@ Kullanıcı tarafı işlemler (her biri ayrı imza, her biri öncesinde özet):
 | `execute_stop` | Satışı dener | Kullanıcıya net, keeper'a ödül — ayrı iki transfer |
 | `cancel_order` | Emri kapatır | Teminatın **tamamı** sahibine; ağ ücreti ayrıdır |
 
-## 7. Onay bekleyen kararlar
+## 7. Alınan kararlar
 
-1. **`max_amount_in` = 50 XLM (`500000000`)?** Sabittir, değiştirilemez.
-2. **`--optimize=false`** ile yükleyip zincirdeki hash'i `4ced7ccf…` yapmak?
-3. **Test emirleri A ve B**, §5'teki sayılarla?
-4. **Tetik 0.1895** (oracle'ın %0,19 altı) — düşüş gelmezse bekleyen durum
-   olarak raporlanır?
+| Karar | Değer |
+| --- | --- |
+| `max_amount_in` | `100000000` = 10.0000000 XLM (emir başına) |
+| WASM | `--optimize=false`, zincirdeki hash `4ced7ccf…` |
+| Test emirleri | A **ve** B, §5'teki sayılarla |
+| Tetik | 0.1895 USDC/XLM |
+
+### 7.1 Tetik marjı kaydı
+
+Tetik seviyesi onaylandığında oracle 0.1898527 okuyordu; marj %0,19 idi.
+Dokuz dakika sonra feed **0.1905785**'e çıktı ve aynı 0.1895 seviyesi
+**%0,57 aşağıda** kaldı. Seviye hâlâ geçerli bir stop'tur (piyasanın altında),
+ama gereken düşüş büyüdü.
+
+Bu, seviyenin kötü seçildiği anlamına gelmez; fiyatın hareket ettiği anlamına
+gelir. Emir oluşturulmadan hemen önce fiyat **tekrar okunacak** ve o anki marj
+imza özetinde yazılacak. Seviye, siz aksini söylemedikçe 0.1895 kalır.
 
 ## 8. Deploy sonrası yapılacaklar
 
