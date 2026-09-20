@@ -18,17 +18,17 @@ const SETTLEMENT_FLOW = [
   {
     icon: Timer,
     title: "Set the trigger",
-    body: "Pick the collateral and the minimum output you are willing to accept. That minimum is the order.",
+    body: "Choose a limit order or a stop-loss, then set the minimum you are willing to receive. That minimum is what the contract guards.",
   },
   {
     icon: ShieldCheck,
     title: "Collateral locks",
-    body: "create_order moves the asset into the Soroban vault. It is yours the whole time and cancellable at will.",
+    body: "The collateral moves into the Soroban vault and stays escrowed there. Only you can cancel it, and cancelling refunds the whole amount.",
   },
   {
     icon: Zap,
-    title: "A keeper executes",
-    body: "When AMM liquidity can meet your minimum, execute_order settles the swap and pays the bounty from realised output.",
+    title: "An executor settles it",
+    body: "Anyone can call the contract once the conditions hold. It measures what the swap actually returned, pays the bounty from that, and only then pays you — if your minimum is still met.",
   },
   {
     icon: Landmark,
