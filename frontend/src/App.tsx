@@ -863,11 +863,17 @@ function App() {
   // become the new price.
   const togglePriceUnit = (): void => {
     const next: PriceUnit = priceUnit === "USDC" ? "TRY" : "USDC";
-    if (effectivePrice > 0 && tryPerUsdc > 0) {
+    // The amounts are the exact statement of the limit, so restate from them.
+    // A half-filled form has none, and then the box itself is all there is —
+    // without that fallback the pill would relabel a number it never converted,
+    // leaving dollars sitting under a lira heading.
+    const usdcPerXlm =
+      effectivePrice > 0 ? effectivePrice : priceToUsdcPerXlm(limitPrice);
+    if (usdcPerXlm > 0) {
       setLimitPrice(
         next === "TRY"
-          ? (effectivePrice * tryPerUsdc).toFixed(4)
-          : effectivePrice.toFixed(7),
+          ? (usdcPerXlm * tryPerUsdc).toFixed(4)
+          : usdcPerXlm.toFixed(7),
       );
     }
     setPriceUnit(next);
