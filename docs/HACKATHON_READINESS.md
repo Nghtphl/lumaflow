@@ -48,6 +48,20 @@ remaining way to lose points on something already built:
 
 ---
 
+## V3 stop vault — status
+
+Deployed to testnet and its automated tests pass; no end-to-end execution has
+been driven by a real price fall.
+
+`CD36555E46SJ5X6WD7H6RLOCWEOHAMQLOQY55CJ4G3KGD3TNQM243MBL`, wasm
+`4ced7ccf…4377d8`, verified byte-identical against the local build. The
+constructor's stored policy was read back from the chain and matches. Seventeen
+V2 and thirty-four V3 contract tests pass against controlled oracle doubles, and
+eight guard cases were simulated against the live contract without writing to
+it. No stop order exists: `get_order_count` is 0. The keeper has only ever been
+run without a signing key. Production is untouched — the deployed console still
+offers limit orders only. Details in `V3_DEPLOY_MANIFEST_TR.md`.
+
 ## Known limitations — state these before a judge finds them
 
 Volunteering these costs nothing and buys credibility. Each is real.

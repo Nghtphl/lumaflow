@@ -1,6 +1,7 @@
 # V3 stop vault — deploy manifesti
 
-**Durum:** Deploy öncesi hazırlık. **Hiçbir şey zincire gönderilmedi.**
+**Durum:** **Testnet'e deploy edildi ve otomatik testler geçti; gerçek fiyat
+düşüşüyle uçtan uca execution yapılmadı.**
 **Tarih:** 20 Eylül 2026. **Kapsam:** Stellar Testnet.
 **Bağlam:** `STOP_LOSS_DESIGN_TR.md` Aşama 3, `ORACLE_DISCOVERY_TR.md` §6.
 
@@ -287,3 +288,76 @@ imza özetinde yazılacak. Seviye, siz aksini söylemedikçe 0.1895 kalır.
 - `keeper/.env` içine `STOP_VAULT_CONTRACT_ID`.
 - `get_config` okunarak politikanın zincire yazıldığı gibi doğrulanması.
 - Zincirdeki WASM hash'inin §2 ile karşılaştırılması.
+
+
+## 9. Sonuç — deploy edildi ve doğrulandı
+
+**Testnet'e deploy edildi ve otomatik testler geçti; gerçek fiyat düşüşüyle
+uçtan uca execution yapılmadı.**
+
+### 9.1 Zincirdeki kimlik
+
+| Alan | Değer |
+| --- | --- |
+| **V3 adresi** | `CD36555E46SJ5X6WD7H6RLOCWEOHAMQLOQY55CJ4G3KGD3TNQM243MBL` |
+| Upload işlemi | `6c6fecf9cc2a783faf5c56469b1dd72b60af1c5d314de11b037212dd8fa828e6` |
+| Deploy işlemi | `da22a964c2c97399a40b1ab8b73200923e1b3d32c0e1411ec5c8a7671886f905` |
+| WASM (zincirden indirildi) | `4ced7ccf…4377d8` — yerel artefakt ile **bayt bayt aynı** |
+| Ödenen | upload 3.4824592 + deploy 56.3740648 = **59.856524 XLM** (sınır 70) |
+
+Deploy'un gerçek ücreti simülasyondan (64,83) daha ucuz çıktı.
+
+### 9.2 Constructor — zincirden okundu
+
+`get_config` çıktısı manifestteki her alanla birebir uyuşuyor: router, oracle
+kaynağı, `base`/`asset`/`quote`, `decimals 14`, `max_age 900`, `max_skew 60`,
+`max_future 0`, `version 1`, teminat XLM SAC, ödeme USDC SAC,
+`max_amount_in 100000000`.
+
+`current_price()` = `19048679779500` → **0.190486797795 USDC/XLM**. Bu tek
+okuma, kontratın oracle yolunun tamamını canlı kanıtlar: `decimals()`,
+`base()`, iki `lastprice()`, skew kontrolü, tazelik kontrolü ve çapraz kur
+aritmetiği gerçek Reflector feed'ine karşı çalıştı.
+
+### 9.3 Canlı kontratta salt-okunur kapı testleri
+
+Hepsi `--send=no`, yani **simülasyon**; zincire hiçbir şey yazılmadı.
+
+| # | Senaryo | Beklenen | Sonuç |
+| --- | --- | --- | --- |
+| 1 | `get_order(1)`, emir yok | `OrderNotFound` #1 | ✅ |
+| 2 | `trigger_stop(1)`, emir yok | `OrderNotFound` #1 | ✅ |
+| 3 | Stop piyasanın üstünde (0.20) | `StopNotBelowMarket` #12 | ✅ |
+| 4 | 20 XLM > 10 XLM sınırı | `AmountTooLarge` #25 | ✅ |
+| 5 | Ters çift (USDC→XLM) | `TokenNotAllowed` #5 | ✅ |
+| 6 | 1500 bps > 1000 | `InvalidFee` #3 | ✅ |
+| 7 | Geçmiş deadline | `InvalidDeadline` #6 | ✅ |
+| 8 | Geçerli parametreler | Başarılı simülasyon | ✅ |
+
+8 numaralı simülasyon `("stop","created")` event'ini
+`(1, owner, 30000000, 18950000000000)` verisiyle üretti — frontend'in
+`createdOrderIdFrom` ayrıştırıcısının beklediği biçim. Simülasyondan sonra
+`get_order_count` **hâlâ 0**: hiçbir emir oluşturulmadı.
+
+### 9.4 Bağlantı
+
+| Yer | Durum |
+| --- | --- |
+| `frontend/.env.local` | `VITE_STOP_VAULT_CONTRACT_ID` yazıldı (gitignore'da) |
+| `keeper/.env` | `STOP_VAULT_CONTRACT_ID` yazıldı; `KEEPER_SECRET_KEY` **bilerek yok** |
+| Vercel production | **dokunulmadı** |
+
+Konsol V3 ile hatasız açılıyor, 4 dağıtımı da okuyor, "okunamadı" uyarısı
+**yok**. Keeper başlatıldı ve `Read-only mode: KEEPER_SECRET_KEY is not
+configured` yazarak iki vault'u da tanıdı; hiçbir işlem göndermedi.
+
+### 9.5 Yapılmayanlar — açıkça
+
+- **Hiç stop emri oluşturulmadı.** `get_order_count` = 0.
+- **Gerçek bir fiyat düşüşüyle trigger → execute zinciri çalıştırılmadı.**
+- Keeper işlem gönderen modda **hiç başlatılmadı**.
+- Stop formunun cüzdan bağlıyken davranışı (boyut sınırı ipucu, "piyasa altında"
+  kontrolü, imza özeti) tarayıcıda doğrulanmadı: form Freighter bağlanmadan
+  etkileşime kapalı. Kontrat tarafı §9.3'te kanıtlandı, arayüz tarafı
+  kanıtlanmadı.
+- Production'a geçilmedi.
