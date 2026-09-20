@@ -1,9 +1,9 @@
-# TriggerVault ⚡
+# LumaFlow ⚡
 
 > **Autonomous FX Hedging & Non-Custodial Order Settlement on Stellar**
 > Built for the Rise In × Stellar Pro Hackathon 2026.
 
-**[▶ Live demo](https://trigger-vault-mu.vercel.app)** · [Vault contract on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) · Stellar Testnet
+**[▶ Live demo](https://lumaflovv.vercel.app)** · [Vault contract on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) · Stellar Testnet
 
 ---
 
@@ -13,7 +13,7 @@ A freelancer in Istanbul invoices in USD and spends in lira. To protect a rate t
 have three bad options: watch the chart themselves, leave funds on a centralised
 exchange that can freeze the account, or hand keys to a custodial bot.
 
-TriggerVault gives them the fourth: a limit order that rests **on-chain**, priced in
+LumaFlow gives them the fourth: a limit order that rests **on-chain**, priced in
 lira, executed by anyone, with collateral that never leaves a Soroban contract. Money
 enters and leaves through a Turkish bank transfer over SEP-6, so the user never has to
 think in stablecoins.
@@ -24,7 +24,7 @@ think in stablecoins.
 
 | | Address / URL |
 | --- | --- |
-| **dApp** | <https://trigger-vault-mu.vercel.app> |
+| **dApp** | <https://lumaflovv.vercel.app> |
 | **Vault contract** | [`CAVF2IT2…R4HWP2INT`](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) |
 | **USDC SAC** | [`CBIELTK6…HMXQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
 | **USDC issuer** | [`GBBD47IF…3ZLLFLA5`](https://stellar.expert/explorer/testnet/account/GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5) |
@@ -83,7 +83,7 @@ wallet, not against the swap output the bounty is later carved from. The order's
 #### Both lifecycles, driven from the deployed app
 
 The settlement above was signed from the command line. These two orders were placed and
-closed entirely through <https://trigger-vault-mu.vercel.app> — the form, the **Execute**
+closed entirely through <https://lumaflovv.vercel.app> — the form, the **Execute**
 button and the **Cancel** button — by a Freighter wallet, `GAJGMHHG…OSSLR`. Both live on
 **V2**, so their minimum is a **net** floor: `min_user_out` is what must reach the wallet
 *after* the keeper bounty.
@@ -190,7 +190,7 @@ Collateral left on that instance is still reclaimable through `cancel_order`.
 flowchart TD
     U["Turkish User<br/>Denominated in TRY"]
 
-    subgraph FE["TriggerVault DApp (React + Freighter)"]
+    subgraph FE["LumaFlow DApp (React + Freighter)"]
         A1["anchor/toml.ts<br/>SEP-1 Discovery"]
         A2["anchor/sep10.ts<br/>Freighter WebAuth → JWT"]
         A3["anchor/sep6.ts<br/>Deposit / Withdraw Rails"]
@@ -207,7 +207,7 @@ flowchart TD
     subgraph SN["Stellar Network (Testnet)"]
         USDC["USDC (Circle Testnet Issuer)"]
         SAC["USDC Stellar Asset Contract"]
-        V["TriggerVault Contract"]
+        V["LumaFlow Contract"]
         DEX["Soroswap Router"]
     end
 
@@ -265,7 +265,7 @@ Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
 ## Quickstart
 
 ```bash
-git clone https://github.com/Nghtphl/trigger-vault.git && cd trigger-vault
+git clone https://github.com/Nghtphl/lumaflow.git && cd lumaflow
 ```
 
 **Frontend**
@@ -297,7 +297,7 @@ Deployment and invocation commands: [`docs/TESTNET_RUNBOOK.md`](docs/TESTNET_RUN
 
 | Variable | Purpose |
 | --- | --- |
-| `VITE_VAULT_CONTRACT_ID` | Deployed TriggerVault contract |
+| `VITE_VAULT_CONTRACT_ID` | Deployed LumaFlow contract |
 | `VITE_RPC_URL` | Soroban RPC endpoint |
 | `VITE_HORIZON_URL` | Horizon, for classic balances and trustlines |
 | `VITE_ANCHOR_HOME_DOMAIN` | SEP-1 discovery root for the TRY anchor |
@@ -338,7 +338,7 @@ docs/              Architecture, spec, anchor integration, testnet runbook
 
 ## Roadmap — toward SCF / InstAward
 
-TriggerVault is built to outlive the hackathon. The limit-order engine is the smallest
+LumaFlow is built to outlive the hackathon. The limit-order engine is the smallest
 useful piece of a larger thesis: **Turkish users should be able to hold, hedge and exit
 dollar exposure without touching a custodial exchange.**
 

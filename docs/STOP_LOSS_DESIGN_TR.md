@@ -1,4 +1,4 @@
-# TriggerVault — Stop-loss ve gizlilik tasarımı
+# LumaFlow — Stop-loss ve gizlilik tasarımı
 
 **Durum:** Tasarım önerisi; uygulanmış, denetlenmiş veya deploy edilmiş özellik beyanı değildir.
 **Tarih:** 20 Eylül 2026. **Kapsam:** Testnet; XLM → USDC stop-satış.
@@ -194,7 +194,7 @@ Temel stop testleri kapanmadan bu aşama production kapsamına girmez. Immutable
 
 ```text
 C = SHA256(canonical_XDR(
-  domain="TriggerVault.Stop.v1", network_id, vault_id,
+  domain="LumaFlow.Stop.v1", network_id, vault_id,
   owner, user_nonce, token_in, token_out, amount_in,
   min_user_out, fee_bps, deadline, policy_hash,
   kind="StopBelow", stop_price, salt_32_bytes

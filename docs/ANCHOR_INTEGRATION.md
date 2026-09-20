@@ -1,4 +1,4 @@
-# Anchor Integration Spec — TriggerVault × TR Mock Anchor (TRY ⇄ USDC)
+# Anchor Integration Spec — LumaFlow × TR Mock Anchor (TRY ⇄ USDC)
 
 > **Purpose of this file.** This is an executable implementation spec. Hand it to a coding
 > agent (Claude Code / Cursor) or work through it manually, top to bottom. Every section
@@ -8,7 +8,7 @@
 > for both tracks: *"Anchor / Local Payments: give the product a real fiat rail using an
 > anchor… a user should be able to put real Turkish lira in and get a usable balance out,
 > or the reverse."* The judging rubric adds: *"Note: Anchor and local payment integrations
-> carry the highest weight within this category."* TriggerVault currently has **no fiat
+> carry the highest weight within this category."* LumaFlow currently has **no fiat
 > rail at all**. This is the single highest-value gap in the submission.
 >
 > Facts below were verified against the live anchor on **2026-09-19**. Anything marked
@@ -52,10 +52,10 @@ Technical Implementation score.
 
 ## 1. What the integration changes about the product
 
-**Today:** TriggerVault is crypto-in / crypto-out. A user must already hold XLM, and the
+**Today:** LumaFlow is crypto-in / crypto-out. A user must already hold XLM, and the
 lira never appears anywhere. That fails requirement #2 outright.
 
-**After this spec:** TriggerVault becomes *"lira-denominated automated exit for Turkish
+**After this spec:** LumaFlow becomes *"lira-denominated automated exit for Turkish
 users"* — and the anchor is **load-bearing**, not a button in a corner:
 
 ```
@@ -124,7 +124,7 @@ flowchart TD
     subgraph SN["Stellar Testnet"]
         USDC["USDC (Circle testnet issuer)"]
         SAC["USDC Stellar Asset Contract"]
-        V["TriggerVault (Soroban)<br/>CAVF2IT2…"]
+        V["LumaFlow (Soroban)<br/>CAVF2IT2…"]
         DEX["Soroswap Router"]
     end
 

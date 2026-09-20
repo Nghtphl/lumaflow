@@ -67,7 +67,7 @@ const delay = (ms: number): Promise<void> =>
 const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-class TriggerVaultKeeper {
+class LumaFlowKeeper {
   private readonly server = new rpc.Server(RPC_URL);
   private readonly vault = new Contract(VAULT_CONTRACT_ID);
   private readonly stopVault = STOP_VAULT_CONTRACT_ID
@@ -80,7 +80,7 @@ class TriggerVaultKeeper {
 
   async start(): Promise<void> {
     await this.verifyConnection();
-    console.log(`TriggerVault keeper started: ${VAULT_CONTRACT_ID}`);
+    console.log(`LumaFlow keeper started: ${VAULT_CONTRACT_ID}`);
     console.log(
       this.stopVault
         ? `Stop vault: ${STOP_VAULT_CONTRACT_ID}`
@@ -381,7 +381,7 @@ class TriggerVaultKeeper {
   }
 }
 
-const keeper = new TriggerVaultKeeper();
+const keeper = new LumaFlowKeeper();
 process.once("SIGINT", () => keeper.stop());
 process.once("SIGTERM", () => keeper.stop());
 keeper.start().catch((error) => {

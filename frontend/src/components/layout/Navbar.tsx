@@ -211,7 +211,7 @@ export function Navbar({ sections = [], right, status }: NavbarProps) {
           >
             <BrandMark />
           </span>
-          <span className="truncate text-subhead font-medium text-ink">TriggerVault</span>
+          <span className="truncate text-subhead font-medium tracking-wide text-ink">LUMAFLOW</span>
         </Link>
 
         {hasSections ? (

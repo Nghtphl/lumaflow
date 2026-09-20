@@ -452,7 +452,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
   componentDidCatch(error: Error, info: ErrorInfo): void {
     // Surface the crash to the console for diagnostics without taking the
     // whole terminal down to a black screen.
-    console.error("TriggerVault terminal render error:", error, info);
+    console.error("LumaFlow terminal render error:", error, info);
   }
 
   handleReset = (): void => {
@@ -2571,7 +2571,7 @@ function App() {
         open={connectModalOpen}
         onClose={() => setConnectModalOpen(false)}
         title="Connect Freighter"
-        description="TriggerVault never holds your keys. Freighter signs every order, cancellation and bridge payment locally."
+        description="LumaFlow never holds your keys. Freighter signs every order, cancellation and bridge payment locally."
       >
         <ul className="space-y-3 border-t border-line pt-5">
           {[

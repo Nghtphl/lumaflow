@@ -19,7 +19,7 @@ export function Footer({ contractId, contractUrl, networkLabel, shortAddress }: 
             <BrandMark />
           </span>
           <div>
-            <p className="text-callout font-medium text-ink">TriggerVault</p>
+            <p className="text-callout font-medium tracking-wide text-ink">LUMAFLOW</p>
             <p className="mt-0.5 text-caption text-ink-4">
               {networkLabel} · non-custodial · collateral never leaves the contract
             </p>

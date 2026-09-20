@@ -45,7 +45,7 @@ export function Masthead({ contractUrl }: MastheadProps) {
         data-reveal
         className="mt-5 max-w-xl text-pretty text-body leading-relaxed text-ink-2"
       >
-        TriggerVault prices your exit in Turkish lira, holds the collateral in a
+        LumaFlow prices your exit in Turkish lira, holds the collateral in a
         Soroban contract, and lets an autonomous keeper close the position the
         moment your rate is reachable. No custody, no manual watching.
       </p>

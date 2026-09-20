@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-TriggerVault: non-custodial limit orders on Stellar Soroban, funded and cashed out in
+LumaFlow: non-custodial limit orders on Stellar Soroban, funded and cashed out in
 Turkish lira through a SEP-6 anchor. Testnet only.
 
 Three independent components, **no workspace or root `package.json`** — `cd` into the one

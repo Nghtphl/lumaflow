@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# TriggerVault — build, deploy and prove one real Soroswap execution on testnet.
+# LumaFlow — build, deploy and prove one real Soroswap execution on testnet.
 #
 # Run this from YOUR OWN terminal (it needs network access to Stellar testnet).
 #   chmod +x scripts/deploy_and_verify.sh

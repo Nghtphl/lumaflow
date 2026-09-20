@@ -1,4 +1,4 @@
-# TriggerVault Architecture & Security Model
+# LumaFlow Architecture & Security Model
 
 ## System Flow
 1. Order Creation (create_order): Creator authenticates and deposits token_in into vault.

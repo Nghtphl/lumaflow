@@ -1,4 +1,4 @@
-# TriggerVault Technical Specification
+# LumaFlow Technical Specification
 
 ## Data Structures
 - Order: id, owner, token_in, token_out, amount_in, min_user_out, fee_bps, status

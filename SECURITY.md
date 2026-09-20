@@ -1,8 +1,8 @@
-# Security Policy — TriggerVault
+# Security Policy — LumaFlow
 
 ## 1. Threat Model & Architecture
 
-TriggerVault is a non-custodial limit and automated order engine on Soroban. The protocol enforces security invariants on-chain:
+LumaFlow is a non-custodial limit and automated order engine on Soroban. The protocol enforces security invariants on-chain:
 
 - **Atomic Balance-Delta Settlement**: The vault does not rely on third-party return values. It records its internal token balance before invoking a swap, treats `balance_after - balance_before` as the realised output, and asserts that what remains after the keeper bounty is at least `min_user_out`.
 - **Non-Custodial Escrow**: User funds remain strictly within the vault contract instance until order conditions are met or the creator cancels the order.
@@ -15,4 +15,4 @@ TriggerVault is a non-custodial limit and automated order engine on Soroban. The
 
 ## 3. Reporting Vulnerabilities
 
-If you discover a vulnerability within TriggerVault smart contracts or anchor integrations, please open a security advisory or report directly to the team.
+If you discover a vulnerability within LumaFlow smart contracts or anchor integrations, please open a security advisory or report directly to the team.

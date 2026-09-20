@@ -1,4 +1,4 @@
-# TriggerVault — Pro Hackathon 2026 submission status
+# LumaFlow — Pro Hackathon 2026 submission status
 
 Re-verified **2026-09-20** against *Pro Hackathon 2026 Tracks & Handbook* (Rise In × Stellar).
 Submission deadline: **Day 2, 12:00**.
@@ -24,7 +24,7 @@ selection and the deck.
 | Deployed on testnet, real functionality | ✅ Vault `CAVF2IT2…R4HWP2INT`, WASM `d9ad61c2…10142c` — verified byte-identical to a local `cargo build --release`. Router slot verified to hold the Soroswap router, not an account. Order #1 created and executed. Two earlier instances stay listed in the console so their resting collateral remains cancellable. |
 | Mermaid architecture diagram | ✅ In `README.md`, nine-step flow from TRY deposit to TRY payout. |
 | Stellar Skills cited by path | ✅ In `README.md`, five skill files with source repos. |
-| Public repo + README + live demo URL + documented contract IDs | ✅ README documents vault, USDC SAC, USDC issuer, XLM SAC and router with explorer links. Live demo at <https://trigger-vault-mu.vercel.app>. |
+| Public repo + README + live demo URL + documented contract IDs | ✅ README documents vault, USDC SAC, USDC issuer, XLM SAC and router with explorer links. Live demo at <https://lumaflovv.vercel.app>. |
 | `cargo test` green; release build clean | ✅ 17 tests passing as of 2026-09-20. |
 | Pitch deck on the official template | ❓ **Not verifiable from this repository.** |
 | Portal submission, track selection, team details | ❓ **Not verifiable from this repository.** |
@@ -115,6 +115,6 @@ orders under new rules.
    the retired V1 vault. The console ignores an environment value that names a retired
    vault and falls back to the registry, so the live site is correct as it stands — but
    set it to `CAVF2IT2…R4HWP2INT` so the hosted config stops disagreeing with the repo.
-4. Open <https://trigger-vault-mu.vercel.app> in a clean browser profile and walk the
+4. Open <https://lumaflovv.vercel.app> in a clean browser profile and walk the
    judge's path end to end.
 5. Freeze the submission commit.
