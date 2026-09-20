@@ -136,7 +136,7 @@ cargo build --release --target wasm32-unknown-unknown   # deployable wasm
 **Keeper**
 
 ```bash
-cd keeper && npm install && npm run dev
+cd keeper && npm install && npm start
 ```
 
 Deployment and invocation commands: [`docs/TESTNET_RUNBOOK.md`](docs/TESTNET_RUNBOOK.md).
