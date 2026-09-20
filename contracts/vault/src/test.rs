@@ -537,15 +537,15 @@ fn test_accepts_a_fill_that_lands_exactly_on_the_net_floor() {
     assert_eq!(token_out_client.balance(&f.executor), 50);
 }
 
-/// The tightest fill the vault can receive still leaves the owner whole.
+/// The derivation is conservative rather than exact, and that is deliberate.
 ///
-/// A generous router hides the derivation entirely, so this one pays back
-/// exactly the gross it was asked for. 997 against 137 bps is deliberately
-/// awkward: the exact gross is 1010.85, the derivation rounds it up to 1011,
-/// the bounty floors to 13, and the owner ends on 998 — a stroop of headroom
-/// rather than a stroop short.
+/// A generous router hides it entirely, so this one pays back exactly the gross
+/// it was asked for. 997 against 137 bps is awkward on purpose: the exact gross
+/// is 1010.85, the derivation rounds up to 1011, the bounty floors to 13, and
+/// the owner ends on 998. One stroop above the floor, not on it — the rounding
+/// buys a slightly stricter fill condition in exchange for never landing short.
 #[test]
-fn test_tightest_possible_fill_still_clears_the_net_floor() {
+fn test_conservative_derivation_never_settles_below_the_net_floor() {
     let env = Env::default();
     let router_id = env.register(ExactFloorRouter, ());
     let f = setup(&env, router_id, 500, 5_000);
@@ -597,23 +597,28 @@ fn test_max_fee_still_honours_the_net_floor() {
     assert!(paid >= 900, "owner received {} at the fee ceiling", paid);
 }
 
-/// A floor large enough to overflow the derivation fails before the vault has
-/// spoken to the router at all, so no authorization is ever issued.
+/// An order that could never execute is refused at creation, before the
+/// collateral is taken. The owner is not left holding a cancellable promise the
+/// contract already knows it cannot keep.
 #[test]
-fn test_unsatisfiable_floor_fails_before_touching_the_router() {
+fn test_rejects_an_unsatisfiable_floor_before_taking_collateral() {
     let env = Env::default();
     let router_id = env.register(PullingRouter, ());
     let f = setup(&env, router_id, 500, 2_000);
     let client = TriggerVaultClient::new(&env, &f.contract_id);
+    let token_in_client = token::Client::new(&env, &f.token_in);
 
-    let order_id =
-        client.create_order(&f.owner, &f.token_in, &f.token_out, &500, &i128::MAX, &100);
-
-    let outcome = client.try_execute_order(&order_id, &f.executor);
-    assert_eq!(outcome, Err(Ok(Error::MathOverflow)));
-    assert_eq!(
-        token::Client::new(&env, &f.token_in).balance(&f.contract_id),
-        500
+    let outcome = client.try_create_order(
+        &f.owner,
+        &f.token_in,
+        &f.token_out,
+        &500,
+        &i128::MAX,
+        &100,
     );
-    assert_eq!(client.get_order(&order_id).status, OrderStatus::Active);
+
+    assert_eq!(outcome, Err(Ok(Error::MathOverflow)));
+    assert_eq!(token_in_client.balance(&f.owner), 500);
+    assert_eq!(token_in_client.balance(&f.contract_id), 0);
+    assert_eq!(client.get_order_count(), 0);
 }

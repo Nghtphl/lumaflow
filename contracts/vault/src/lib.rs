@@ -183,6 +183,12 @@ impl TriggerVault {
         if fee_bps > MAX_FEE_BPS {
             return Err(Error::InvalidFee);
         }
+        // An order whose gross floor cannot be derived can never execute. Prove
+        // it here, before the collateral moves, rather than letting the owner
+        // fund an order that only fails when a keeper first tries it. Being
+        // cancellable is not an answer to escrowing funds against a promise the
+        // contract already knows it cannot keep.
+        Self::gross_floor_for(min_user_out, fee_bps)?;
 
         let token_client = token::Client::new(&env, &token_in);
         token_client.transfer(&owner, &env.current_contract_address(), &amount_in);
