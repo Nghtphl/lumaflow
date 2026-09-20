@@ -40,6 +40,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { cn } from "./lib/cn";
+import { formatUsdcPrice, limitComparator } from "./lib/price";
 import { ROUTES } from "./routes";
 import { LandingPage } from "./pages/LandingPage";
 import { AppBackground } from "./components/layout/AppBackground";
@@ -467,13 +468,17 @@ function App() {
       ? `≈ ${(numericAmount * tryPerUsdc).toFixed(2)} TRY`
       : `≈ ${(numericAmount * triggerPriceTry).toFixed(2)} TRY at target`
     : undefined;
+  const comparator = limitComparator(depositToken);
   // The limit is denominated in the target asset, but the collateral is priced
   // in dollars — quoting only TRY leaves the user converting USDC → XLM by
   // hand. `effectivePrice` is already USDC per XLM in both directions.
+  //
+  // Stated as a bare unit price this reads backwards: raising the minimum is
+  // asking for a better rate, so the figure falls, which looks like the
+  // position shrinking. Phrasing it as the fill condition makes the direction
+  // the point rather than a surprise.
   const targetFiatValue = effectivePrice > 0
-    ? tryPerUsdc > 0
-      ? `1 XLM = ${effectivePrice.toFixed(4)} USDC ≈ ${triggerPriceTry.toFixed(2)} TRY`
-      : `1 XLM = ${effectivePrice.toFixed(4)} USDC`
+    ? `Fills when 1 XLM ${comparator} ${formatUsdcPrice(effectivePrice)} USDC`
     : undefined;
 
   const safeOrders = useMemo(
@@ -1344,7 +1349,7 @@ function App() {
                       label="Trigger price"
                       value={
                         effectivePrice > 0
-                          ? `${effectivePrice.toFixed(4)} USDC / XLM`
+                          ? `${comparator} ${formatUsdcPrice(effectivePrice)} USDC / XLM`
                           : "Set an amount and a minimum"
                       }
                       sub={

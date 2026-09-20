@@ -1,4 +1,5 @@
 import { Ban, TriangleAlert, Wallet, Zap } from "lucide-react";
+import { formatUsdcPrice, limitComparator } from "../../lib/price";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 
@@ -130,7 +131,7 @@ export function OrderCard({
           </p>
           {triggerUsdc !== null ? (
             <p className="mt-1 truncate font-mono text-caption tnum text-accent-ink">
-              1 XLM = {triggerUsdc.toFixed(4)} USDC
+              {limitComparator(inputSymbol)} {formatUsdcPrice(triggerUsdc)} USDC / XLM
             </p>
           ) : null}
           {triggerTry !== null ? (
