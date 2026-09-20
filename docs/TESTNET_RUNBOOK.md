@@ -214,9 +214,26 @@ Record in the README: **contract id, execution tx hash, router address, pair add
 
 ## 9. Still open after this
 
-* The contract is redeployed, so the **old vault `CDERIBD7…` keeps the old orders**. Say in
-  the README which id is current; do not leave both live in the UI.
-* `docs/SECURITY.md` §3.1 still describes the pre-fix `env.invoke_contract` flow and needs
-  rewriting against the new one (and it still contains the corrupted control characters).
-* `docs/ARCHITECTURE.md` should gain the Mermaid diagram and the new execution sequence.
-* The anchor rail (`docs/ANCHOR_INTEGRATION.md`) is still the highest-weight missing piece.
+Checked 2026-09-20. Items resolved since the first draft are no longer listed.
+
+* **Old vaults stay live in the UI — deliberately.** Order ids restart at 1 in every
+  deployment and collateral does not migrate, so retiring a vault by repointing a constant
+  would orphan whatever it still holds. `frontend/src/vaults.ts` keeps a list instead:
+  the newest vault accepts new orders, earlier ones stay readable and cancellable, and
+  each carries the minimum semantics its orders were written under. Add an entry there
+  when you redeploy; do not edit the constant.
+* **`VITE_VAULT_CONTRACT_ID` in the hosting environment is not updated by this runbook.**
+  The repository and the Vercel project are updated on different schedules. The registry
+  ignores an environment value that names an already-retired vault, but it cannot guess a
+  new one — set it after deploying.
+* **The executor is the deploy key in the proof transaction**, so the bounty and the payout
+  land in the same account. The split is real and computed by the contract, but running
+  `keeper/` with its own funded key would show it plainly.
+* **The keeper is not hosted.** It runs from a terminal. A supervised always-on executor
+  with retry and alerting is on the roadmap.
+* **`docs/ARCHITECTURE.md` has no diagram of its own** — the Mermaid flow lives in
+  `README.md`. Worth copying across if the docs are read standalone.
+* **A classic-asset payout needs a trustline on the receiving account.** `execute_order`
+  reverts with a token error (`#13`, "trustline entry is missing") if the owner or the
+  executor cannot hold `token_out`. Add it with `stellar tx new change-trust --line
+  USDC:<issuer>` before settling into a classic asset.
