@@ -100,9 +100,14 @@ export function Stepper({
               </span>
               <span
                 className={cn(
-                  "mt-2 text-caption leading-tight transition-colors duration-300",
+                  // `text-balance` keeps a two-word label from breaking into a
+                  // lonely orphan; the hyphens let the longest one ("Ledger
+                  // Confirmation") wrap instead of spilling past its column at
+                  // 375px, where the four cells are 72px wide.
+                  "mt-2 text-balance hyphens-auto text-caption leading-tight transition-colors duration-300",
                   done || active ? "text-ink-2" : "text-ink-4",
                 )}
+                lang="en"
               >
                 {label}
               </span>
