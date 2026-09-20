@@ -15,11 +15,17 @@ canlı zincirden okunduğunu kaydeder. Onay alınmadan hiçbir işlem gönderilm
 | Passphrase | `Test SDF Network ; September 2015` | — |
 | RPC | `https://soroban-testnet.stellar.org` | — |
 | İmzalayan | `deployer` → `GBICM7WA…N6OI6A` | `stellar keys address deployer` |
+| Yetki kanıtı | **V2'yi bu hesap deploy etti** | Zincirdeki V2 WASM'i `d9ad61c2…142c`; bu hesabın 20 Eyl 05:22'de yüklediği executable ile aynı |
 | XLM bakiyesi | 9 917.0175586 | Horizon, 20 Eyl 11:04 |
 | USDC bakiyesi | 1.0535743 (trustline **var**) | Horizon, 20 Eyl 11:04 |
 
 İmzalayan hesap keeper'ın salt-okunur kaynak hesabıyla aynıdır; bu yalnız
 simülasyon içindir, keeper'ın imza yetkisi yoktur.
+
+Runbook `trigger-deployer` adını kullanıyor; yerel keystore'da böyle bir kimlik
+**yok**, gerçek kimliğin adı `deployer`. Konsoldaki emirlerin sahibi olan
+cüzdanlar (`GAJGMHHG…`, `GCT6ODOI…`) bu hesaptan farklıdır — bu bir dağıtım
+hesabıdır, kullanıcının Freighter cüzdanı değil.
 
 ## 2. WASM
 
@@ -182,11 +188,31 @@ yapar; burada ayrıştırılması, zincire giden hash'in okunup kaydedilebilmesi
 içindir. İşlem sayısı komutun kendi çıktısından teyit edilecek, bu tablodan
 varsayılmayacak.
 
-**Ücretler — tahmin, ölçüm değil.** `--build-only` simülasyon yapmadığı için
-gerçek kaynak ücreti gönderilmeden okunamıyor. Büyüklük sırası: yükleme
-~0,5–1,5 XLM, deploy+constructor ~0,05–0,3 XLM, kullanıcı çağrıları
-~0,02–0,2 XLM. **Gerçek rakamlar gönderim sonrası raporlanacak.** İmzalayan
-hesapta 9 917 XLM var; ücret bir kısıt değil.
+**Ücretler — ÖLÇÜLDÜ, tahmin değil.** Yükleme işlemi RPC'ye `simulateTransaction`
+ile gönderilmeden simüle edildi:
+
+| Kalem | Ölçüm | Kaynak |
+| --- | --- | --- |
+| V3 yükleme (24 981 bayt, optimize kapalı) | **4.0044925 XLM** | `minResourceFee` simülasyonu |
+| V3 yükleme (22 696 bayt, optimize açık) | 3.8281702 XLM | `minResourceFee` simülasyonu |
+| V3 deploy + constructor | ölçülemedi — WASM yüklenmeden simüle edilemiyor | — |
+| V2 yükleme (11 250 bayt) | 2.0460526 XLM | Horizon, **gerçekten ödenmiş** |
+| V2 deploy + constructor | 0.0033409 XLM | Horizon, **gerçekten ödenmiş** |
+
+V3'ün WASM'i V2'nin 2,22 katı (24 981 / 11 250) ve ücreti de 1,96 katı çıkıyor —
+yani rakam simülasyon tuhaflığı değil, boyutun doğrudan sonucu. Deploy ayağı
+V2'de 0,0033 XLM'e mal olmuştu; V3'ün constructor'ı bir `Config` girdisi daha
+yazdığı için biraz üstünde beklenir, ama büyüklük sırası aynıdır.
+
+**Toplam beklenen: ~4,01 XLM.**
+
+**Bu, oturumda konulan 1,8 XLM üst sınırının üzerindedir.** Daha önce bu
+belgede verilen "~0,5–1,5 XLM" tahmini yanlıştı; ölçüm onun yerini aldı.
+Gönderim, sınırın yükseltilmesi açıkça onaylanmadan yapılmaz.
+
+Bağlam, karar için: bu testnet XLM'idir, friendbot'tan bedava alınır ve parasal
+karşılığı yoktur. İmzalayan hesapta 9 917 XLM var; 4 XLM bakiyenin %0,04'ü.
+Yine de sınır sizin koyduğunuz sınırdır.
 
 Kullanıcı tarafı işlemler (her biri ayrı imza, her biri öncesinde özet):
 
