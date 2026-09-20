@@ -18,7 +18,7 @@ protocol rather than a test mock.
 | 1. Integration with an eligible protocol | ⚠️ **Interface only.** The router interface matches Soroswap's, but the only implementation it has ever been called against is `MockRouter` in `test.rs`. As written it would fail against the real router (see P0-2). |
 | 2. Anchor / local payments (TRY ⇄ Stellar) | ❌ **Absent.** No SEP-1/6/10/24/31/38 anywhere in the repo. *"Anchor and local payment integrations carry the highest weight."* |
 | 3. Core feature — integration is load-bearing | ⚠️ The swap is load-bearing in design; nothing proves it on testnet. |
-| Deployed on testnet, real functionality | ⚠️ Vault `CDERIBD7…` is live with 15 invocations, but **0 sub-invocations and 0 errors** — no `execute_order` has ever completed on chain. |
+| Deployed on testnet, real functionality | Vault redeployed as `CDVJV6SI…` on the current build, initialised with the real Soroswap router. The previous instance `CDERIBD7…` ran an older build whose settlement path pushed collateral to the router instead of authorising its pull, so `execute_order` always reverted there and never completed. Settlement is unproven on chain until one runs on the new instance. |
 | Mermaid architecture diagram (Scale Track) | ❌ Missing |
 | Stellar Skills cited by path | ❌ Missing (explicit submission requirement) |
 | Public repo + README + live demo URL + documented contract IDs | ⚠️ Repo yes; README is 755 bytes; no deployment config, no live URL |

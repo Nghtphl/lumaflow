@@ -64,7 +64,7 @@ import { TokenSelector } from "./components/vault/TokenSelector";
 
 const CONTRACT_ID =
   import.meta.env.VITE_VAULT_CONTRACT_ID ||
-  "CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB";
+  "CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD";
 const RPC_URL =
   import.meta.env.VITE_RPC_URL || "https://soroban-testnet.stellar.org";
 const HORIZON_URL =

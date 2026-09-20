@@ -3,7 +3,7 @@
 > **Autonomous FX Hedging & Non-Custodial Order Settlement on Stellar**
 > Built for the Rise In × Stellar Pro Hackathon 2026.
 
-**[▶ Live demo](https://trigger-vault-mu.vercel.app)** · [Vault contract on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB) · Stellar Testnet
+**[▶ Live demo](https://trigger-vault-mu.vercel.app)** · [Vault contract on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD) · Stellar Testnet
 
 ---
 
@@ -25,7 +25,7 @@ think in stablecoins.
 | | Address / URL |
 | --- | --- |
 | **dApp** | <https://trigger-vault-mu.vercel.app> |
-| **Vault contract** | [`CDERIBD7…GYQMPB`](https://stellar.expert/explorer/testnet/contract/CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB) |
+| **Vault contract** | [`CDVJV6SI…WK3BNTWD`](https://stellar.expert/explorer/testnet/contract/CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD) |
 | **USDC SAC** (collateral) | [`CBIELTK6…HMXQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
 | **USDC issuer** | [`GBBD47IF…3ZLLFLA5`](https://stellar.expert/explorer/testnet/account/GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5) |
 | **Native XLM SAC** (target) | [`CDLZFC3S…U2HHGCYSC`](https://stellar.expert/explorer/testnet/contract/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC) |
@@ -38,33 +38,37 @@ think in stablecoins.
 
 ### Verified on-chain
 
-Every hash below is a real, successful Stellar Testnet transaction against the deployed
-contract — read back from Soroban RPC events and Horizon, not from the UI.
+Every hash below is a real, successful Stellar Testnet transaction, read back from
+Soroban RPC and Horizon rather than from the UI.
 
 | Step | Transaction |
 | --- | --- |
 | **SEP-6 deposit** — anchor pays out 61.1895780 USDC | [`65434cdf…411d66`](https://stellar.expert/explorer/testnet/tx/65434cdf31f19aa23d6408da4c3b6bf32587f3a169fadfa4088e44bbdb411d66) |
-| **`create_order`** — order #10 locks collateral in the vault | [`1352efc1…68ec5a`](https://stellar.expert/explorer/testnet/tx/1352efc105fbdbc48b2ff2c739af941473f36b0382ab48ba27e9e9e06868ec5a) |
-| **`cancel_order`** — order #5 refunded in full | [`a16bf08b…a39909`](https://stellar.expert/explorer/testnet/tx/a16bf08ba88b093c15a4ce7a424bf427cf6dd597467729d60e419321baa39909) |
-| **`execute_order`** | ⚠️ Not yet executed on testnet — see below |
+| **WASM upload** — `0d2c7cf0…a8e204` | [`b8c53bb1…4fe6bd`](https://stellar.expert/explorer/testnet/tx/b8c53bb15644d59526f848a2ca49091714b570902b2d85d6f7af5389d14fe6bd) |
+| **Contract deployment** | [`22715530…c86bf4`](https://stellar.expert/explorer/testnet/tx/22715530651a5d2e3baca9fcf9db63aa0627f2dfe9bbc471b87e869d91c86bf4) |
+| **`init`** — admin + Soroswap router | [`af3e4dd3…db31f9`](https://stellar.expert/explorer/testnet/tx/af3e4dd33cce67b188c6000fc3125b60d90765ea0fe7cf3051b4a93f2fdb31f9) |
+| **`create_order`** | _pending on this instance_ |
+| **`execute_order`** | _pending on this instance_ |
 
-To date the contract has taken **16 invocations with 0 errors**: 10 `create_order` and
-4 `cancel_order`. Settlement has not yet run on-chain.
+The on-chain WASM hash matches the local `cargo build --release` output byte for byte,
+so the code above is the code these 11 tests cover.
 
-> **Known issue — settlement is not wired on this deployment.** The vault was initialised
-> with the deployer's own account (`GBICM7WA…`) in the router slot instead of the Soroswap
-> router contract, so `execute_order` reverts when it tries to move collateral to something
-> that is not a pool. The router itself is live and the USDC/XLM pool exists
-> (`CCBX3NZT…GHEH7RQS`); the fix is one admin call:
->
-> ```bash
-> stellar contract invoke --id CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB \
->   --source <admin> --network testnet \
->   -- set_router --router CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD
-> ```
->
-> Contract logic is covered by 11 passing tests including the settlement path; this is a
-> deployment configuration gap, not a contract bug.
+<details>
+<summary>Previous contract instance (<code>CDERIBD7…GYQMPB</code>)</summary>
+
+The first deployment carried an earlier build whose settlement path pushed collateral to
+the router before swapping. Soroswap does not take custody — it pulls from the order's
+owner — so execution always reverted on an authorization mismatch, and no `execute_order`
+ever succeeded there. Order creation and cancellation did work, and those transactions
+remain valid history:
+
+- `create_order` — [`1352efc1…68ec5a`](https://stellar.expert/explorer/testnet/tx/1352efc105fbdbc48b2ff2c739af941473f36b0382ab48ba27e9e9e06868ec5a)
+- `cancel_order` — [`a16bf08b…a39909`](https://stellar.expert/explorer/testnet/tx/a16bf08ba88b093c15a4ce7a424bf427cf6dd597467729d60e419321baa39909)
+
+Collateral in the ten orders left on that instance is still reclaimable by its owners
+through `cancel_order`.
+
+</details>
 
 ---
 

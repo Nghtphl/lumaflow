@@ -124,7 +124,7 @@ flowchart TD
     subgraph SN["Stellar Testnet"]
         USDC["USDC (Circle testnet issuer)"]
         SAC["USDC Stellar Asset Contract"]
-        V["TriggerVault (Soroban)<br/>CDERIBD7…"]
+        V["TriggerVault (Soroban)<br/>CDVJV6SI…"]
         DEX["Soroswap Router"]
     end
 
@@ -160,7 +160,7 @@ Create `frontend/.env.example` (and a real `.env.local`), and document every var
 
 ```dotenv
 # Existing
-VITE_VAULT_CONTRACT_ID=CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB
+VITE_VAULT_CONTRACT_ID=CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD
 VITE_RPC_URL=https://soroban-testnet.stellar.org
 
 # Anchor (SEP-1 discovery does the rest)

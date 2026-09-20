@@ -9,3 +9,7 @@ target/
 .fuse_hidden*
 .vercel
 .env*
+# ...but the template must ship: the README tells people to copy it, and it
+# holds public testnet addresses only.
+!.env.example
+!**/.env.example
