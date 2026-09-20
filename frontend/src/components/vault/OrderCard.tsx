@@ -14,7 +14,9 @@ export interface OrderCardProps {
   feeBps: number;
   /** Lira value of the collateral, or null when no anchor rate is published. */
   collateralTry: number | null;
-  /** Implied lira price of one XLM at the trigger, or null without a rate. */
+  /** Implied dollar price of one XLM at the trigger, in the pair's own terms. */
+  triggerUsdc: number | null;
+  /** The same price in lira, or null when no anchor rate is published. */
   triggerTry: number | null;
   /**
    * Why this order can never settle, or null when it can. Unfillable orders are
@@ -64,6 +66,7 @@ export function OrderCard({
   minAmountOut,
   feeBps,
   collateralTry,
+  triggerUsdc,
   triggerTry,
   isOwn,
   canCancel,
@@ -125,9 +128,14 @@ export function OrderCard({
             {minAmountOut.toFixed(4)}
             <span className="ml-1 text-footnote text-ink-3">{outputSymbol}</span>
           </p>
-          {triggerTry !== null ? (
+          {triggerUsdc !== null ? (
             <p className="mt-1 truncate font-mono text-caption tnum text-accent-ink">
-              1 XLM ≈ {triggerTry.toFixed(2)} TRY
+              1 XLM = {triggerUsdc.toFixed(4)} USDC
+            </p>
+          ) : null}
+          {triggerTry !== null ? (
+            <p className="truncate font-mono text-caption tnum text-ink-4">
+              ≈ {triggerTry.toFixed(2)} TRY
             </p>
           ) : null}
         </div>

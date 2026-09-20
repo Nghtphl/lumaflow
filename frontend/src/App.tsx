@@ -467,10 +467,13 @@ function App() {
       ? `≈ ${(numericAmount * tryPerUsdc).toFixed(2)} TRY`
       : `≈ ${(numericAmount * triggerPriceTry).toFixed(2)} TRY at target`
     : undefined;
-  const targetFiatValue = tryPerUsdc > 0 && numericMinOut > 0
-    ? targetToken === "USDC"
-      ? `≈ ${(numericMinOut * tryPerUsdc).toFixed(2)} TRY minimum`
-      : `1 XLM ≈ ${triggerPriceTry.toFixed(2)} TRY via SEP-38`
+  // The limit is denominated in the target asset, but the collateral is priced
+  // in dollars — quoting only TRY leaves the user converting USDC → XLM by
+  // hand. `effectivePrice` is already USDC per XLM in both directions.
+  const targetFiatValue = effectivePrice > 0
+    ? tryPerUsdc > 0
+      ? `1 XLM = ${effectivePrice.toFixed(4)} USDC ≈ ${triggerPriceTry.toFixed(2)} TRY`
+      : `1 XLM = ${effectivePrice.toFixed(4)} USDC`
     : undefined;
 
   const safeOrders = useMemo(
@@ -1340,11 +1343,16 @@ function App() {
                     <ReceiptRow
                       label="Trigger price"
                       value={
-                        tryPerUsdc > 0
-                          ? `${triggerPriceTry.toFixed(2)} TRY / XLM`
-                          : "Awaiting anchor rate"
+                        effectivePrice > 0
+                          ? `${effectivePrice.toFixed(4)} USDC / XLM`
+                          : "Set an amount and a minimum"
                       }
-                      emphasis={tryPerUsdc > 0}
+                      sub={
+                        effectivePrice > 0 && tryPerUsdc > 0
+                          ? `≈ ${triggerPriceTry.toFixed(2)} TRY / XLM`
+                          : undefined
+                      }
+                      emphasis={effectivePrice > 0}
                       last
                     />
                   </div>
@@ -1490,6 +1498,7 @@ function App() {
                     minAmountOut={order.minAmountOut}
                     feeBps={order.feeBps}
                     collateralTry={tryPerUsdc > 0 ? collateralTry : null}
+                    triggerUsdc={orderUsdcPerXlm > 0 ? orderUsdcPerXlm : null}
                     triggerTry={
                       tryPerUsdc > 0 && order.minAmountOut > 0 ? orderTryPerXlm : null
                     }
@@ -1665,11 +1674,13 @@ function BalanceRow({
 function ReceiptRow({
   label,
   value,
+  sub,
   emphasis = false,
   last = false,
 }: {
   label: string;
   value: string;
+  sub?: string;
   emphasis?: boolean;
   last?: boolean;
 }) {
@@ -1681,13 +1692,20 @@ function ReceiptRow({
       )}
     >
       <span className="shrink-0 text-footnote text-ink-3">{label}</span>
-      <span
-        className={cn(
-          "min-w-0 truncate text-right font-mono text-footnote tnum",
-          emphasis ? "text-accent-ink" : "text-ink",
-        )}
-      >
-        {value}
+      <span className="flex min-w-0 flex-col items-end">
+        <span
+          className={cn(
+            "min-w-0 truncate text-right font-mono text-footnote tnum",
+            emphasis ? "text-accent-ink" : "text-ink",
+          )}
+        >
+          {value}
+        </span>
+        {sub ? (
+          <span className="min-w-0 truncate text-right font-mono text-caption tnum text-ink-4">
+            {sub}
+          </span>
+        ) : null}
       </span>
     </div>
   );
