@@ -35,9 +35,31 @@ export interface VaultVersion {
   note: string;
 }
 
-const CONFIGURED_ACTIVE = (
-  import.meta.env.VITE_VAULT_CONTRACT_ID as string | undefined
-)?.trim();
+/** The vault this build was cut against. */
+const ACTIVE_VAULT_ID = "CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT";
+
+/** Vaults that have been superseded. Listed below with their own semantics. */
+const RETIRED_VAULT_IDS = [
+  "CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD",
+  "CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB",
+];
+
+/**
+ * The environment may name the accepting vault, but it may also be stale — a
+ * hosting environment updated on a different schedule from the repository. A
+ * stale value that names a *retired* vault is worse than no value at all: it
+ * would hand that vault this entry's semantics and tell its owners their
+ * minimum is a net guarantee when it never was. Ignore it in that case; an
+ * unrecognised id is still honoured, because that is how a new deployment is
+ * pointed at before this file knows about it.
+ */
+const CONFIGURED_ACTIVE = ((): string | undefined => {
+  const configured = (
+    import.meta.env.VITE_VAULT_CONTRACT_ID as string | undefined
+  )?.trim();
+  if (!configured) return undefined;
+  return RETIRED_VAULT_IDS.includes(configured) ? undefined : configured;
+})();
 
 /**
  * Newest first. The accepting vault leads because it is the one being used;
@@ -45,7 +67,7 @@ const CONFIGURED_ACTIVE = (
  */
 export const VAULTS: ReadonlyArray<VaultVersion> = [
   {
-    id: CONFIGURED_ACTIVE || "CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT",
+    id: CONFIGURED_ACTIVE || ACTIVE_VAULT_ID,
     label: "V2",
     semantics: "net",
     accepting: true,
