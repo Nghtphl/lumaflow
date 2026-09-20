@@ -104,7 +104,7 @@ export function Stepper({
                   // lonely orphan; the hyphens let the longest one ("Ledger
                   // Confirmation") wrap instead of spilling past its column at
                   // 375px, where the four cells are 72px wide.
-                  "mt-2 text-balance hyphens-auto text-caption leading-tight transition-colors duration-300",
+                  "mt-2 w-full break-words text-[0.625rem] leading-tight transition-colors duration-300 sm:text-caption",
                   done || active ? "text-ink-2" : "text-ink-4",
                 )}
                 lang="en"
