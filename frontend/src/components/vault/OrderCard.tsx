@@ -13,7 +13,15 @@ export interface OrderCardProps {
   executable: boolean;
   owner: string;
   ownerLabel: string;
-  status: "Active" | "Executed" | "Cancelled";
+  status: "Active" | "Armed" | "Triggered" | "Executed" | "Cancelled";
+  /** A stop carries a trigger the queue has to explain; a limit order does not. */
+  orderType: "limit" | "stop";
+  /** Stop only: the level the feed has to reach, already formatted. */
+  stopPriceLabel: string | null;
+  /** Stop only: when the order stops being actionable, already formatted. */
+  deadlineLabel: string | null;
+  /** Stop only: whether the deadline has passed, which closes everything but cancel. */
+  expired: boolean;
   inputSymbol: string;
   outputSymbol: string;
   amountIn: number;
@@ -41,19 +49,38 @@ export interface OrderCardProps {
   busy: boolean;
   onCancel: () => void;
   onExecute: () => void;
+  /** Stop only: record the fall. Moves no funds. */
+  onTrigger: () => void;
 }
 
 const STATUS_TONE = {
   Active: "accent",
+  Armed: "accent",
+  Triggered: "accent",
   Executed: "positive",
   Cancelled: "neutral",
 } as const;
 
 const STATUS_LABEL = {
   Active: "Resting",
+  Armed: "Watching",
+  Triggered: "Triggered",
   Executed: "Filled",
   Cancelled: "Cancelled",
 } as const;
+
+/**
+ * What each state means for the collateral, in one line.
+ *
+ * `Triggered` is the one that has to be said out loud: the fall is on chain and
+ * the order is committed to selling, but nothing has been sold and the minimum
+ * still has to be met. Leaving that to be inferred from a badge is how somebody
+ * reads "Triggered" as "sold".
+ */
+const STATUS_NOTE: Partial<Record<OrderCardProps["status"], string>> = {
+  Armed: "Waiting for the feed to reach the trigger. Nothing is sold yet.",
+  Triggered: "The fall is recorded on chain. Settlement is a separate step and still has to meet the minimum.",
+};
 
 /**
  * One row of the public execution queue. A single hairline box, and inside it
@@ -83,7 +110,14 @@ export function OrderCard({
   busy,
   onCancel,
   onExecute,
+  onTrigger,
+  orderType,
+  stopPriceLabel,
+  deadlineLabel,
+  expired,
 }: OrderCardProps) {
+  const open = status === "Active" || status === "Armed" || status === "Triggered";
+  const note = STATUS_NOTE[status];
   return (
     <article className="group rounded-lg border border-line p-4 transition-colors duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] hover:border-line-strong">
       <header className="flex items-start justify-between gap-3">
@@ -92,7 +126,7 @@ export function OrderCard({
             <h3 className="font-mono text-callout font-medium text-ink">
               {vaultLabel}·#{id}
             </h3>
-            {status === "Active" && unfillableReason ? (
+            {open && unfillableReason ? (
               <Badge
                 tone="warning"
                 icon={<TriangleAlert className="size-3" strokeWidth={2.25} aria-hidden="true" />}
@@ -155,6 +189,30 @@ export function OrderCard({
         </div>
       </div>
 
+      {orderType === "stop" ? (
+        <div className="mt-3 space-y-1.5 border-t border-line pt-3">
+          {stopPriceLabel ? (
+            <p className="font-mono text-caption tnum text-ink-3">
+              Sells at or below{" "}
+              <span className="text-accent-ink">{stopPriceLabel} USDC / XLM</span>
+              <span className="ml-1 font-sans text-ink-4">· read from the price feed, not the pool</span>
+            </p>
+          ) : null}
+          {deadlineLabel ? (
+            <p className="font-mono text-caption tnum text-ink-4">
+              {expired ? "Expired " : "Until "}
+              {deadlineLabel}
+              {expired ? (
+                <span className="ml-1 font-sans">· only cancellation is open</span>
+              ) : null}
+            </p>
+          ) : null}
+          {note ? (
+            <p className="text-caption leading-relaxed text-ink-4">{note}</p>
+          ) : null}
+        </div>
+      ) : null}
+
       <footer className="mt-4 flex flex-wrap items-center justify-between gap-x-5 gap-y-2 border-t border-line pt-3">
         <span className="font-mono text-caption tnum text-ink-4">
           Keeper bounty {(feeBps / 100).toFixed(2)}%
@@ -164,18 +222,34 @@ export function OrderCard({
               : "· deducted from the minimum above"}
           </span>
         </span>
-        {status === "Active" ? (
+        {open ? (
           <div className="flex flex-wrap items-center justify-end gap-5">
-            {executable ? (
+            {orderType === "stop" && status === "Armed" && executable ? (
               <Button
                 size="sm"
                 variant="quiet"
-                disabled={busy || unfillableReason !== null}
+                disabled={busy || expired}
+                onClick={onTrigger}
+                title={
+                  expired
+                    ? "This order has passed its deadline."
+                    : "Records the fall on chain. Moves no funds."
+                }
+                icon={<Zap className="size-3.5" strokeWidth={2.25} aria-hidden="true" />}
+              >
+                Trigger
+              </Button>
+            ) : null}
+            {orderType === "stop" && status === "Armed" ? null : executable ? (
+              <Button
+                size="sm"
+                variant="quiet"
+                disabled={busy || unfillableReason !== null || expired}
                 onClick={onExecute}
                 title={unfillableReason ?? undefined}
                 icon={<Zap className="size-3.5" strokeWidth={2.25} aria-hidden="true" />}
               >
-                Execute
+                {orderType === "stop" ? "Settle" : "Execute"}
               </Button>
             ) : (
               <span
