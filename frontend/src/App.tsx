@@ -67,9 +67,6 @@ import { OrderCard } from "./components/vault/OrderCard";
 import { TelemetryBar } from "./components/vault/TelemetryBar";
 import { TokenSelector } from "./components/vault/TokenSelector";
 
-const CONTRACT_ID =
-  import.meta.env.VITE_VAULT_CONTRACT_ID ||
-  "CDVJV6SITYH2A4CNTG4YG5CDYDRM5ABTDIBA3UVBLXFQNE6FWK3BNTWD";
 const RPC_URL =
   import.meta.env.VITE_RPC_URL || "https://soroban-testnet.stellar.org";
 const HORIZON_URL =
@@ -1241,7 +1238,7 @@ function App() {
 
   const busy = lifecycle === "running";
   const connected = Boolean(walletAddress);
-  const contractUrl = `${EXPLORER_BASE}/contract/${CONTRACT_ID}`;
+  const contractUrl = `${EXPLORER_BASE}/contract/${ACTIVE_VAULT.id}`;
   const activeCount = safeOrders.filter((order) => order.status === "Active").length;
   const historyCount = safeOrders.length - activeCount;
   const scrollToConsole = (): void => {
@@ -1261,9 +1258,9 @@ function App() {
               updatedAt={telemetry.updatedAt}
               activeValue={activeValue}
               activeValueTry={tryPerUsdc > 0 ? activeValue * tryPerUsdc : null}
-              contractId={CONTRACT_ID}
+              contractId={ACTIVE_VAULT.id}
               contractUrl={contractUrl}
-              contractLabel={shortAddress(CONTRACT_ID, 8, 6)}
+              contractLabel={shortAddress(ACTIVE_VAULT.id, 8, 6)}
               refreshing={refreshing}
               onRefresh={() => void refreshChain()}
             />
@@ -1777,7 +1774,7 @@ function App() {
       </Routes>
 
       <Footer
-        contractId={CONTRACT_ID}
+        contractId={ACTIVE_VAULT.id}
         contractUrl={contractUrl}
         networkLabel={NETWORK_LABEL}
         shortAddress={(value) => shortAddress(value, 8, 6)}
