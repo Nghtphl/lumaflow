@@ -487,13 +487,32 @@ function App() {
     ? "Target unit price (USD)"
     : "Total target to receive (USD)";
 
-  const triggerHint = triggerIsPriceField
-    ? `Target unit price for 1 XLM in USD. Total output will settle for at least ${(
-        numericAmount * numericTarget
-      ).toFixed(2)} USDC on-chain.`
-    : `Total target amount to receive in USD value. Settles for at least ${(
-        numericTarget / REFERENCE_XLM_USD
-      ).toFixed(2)} XLM on-chain, valuing XLM at ${REFERENCE_XLM_USD} USD.`;
+  // Keyed so a mode switch replaces the whole footnote instead of patching the
+  // text nodes inside it. React's in-place text patching is what fails when
+  // anything outside React has touched those nodes, and that failure surfaces
+  // as "insertBefore ... not a child of this node".
+  const triggerHint = (
+    <span key={`footnote-${depositToken}`}>
+      {triggerIsPriceField ? (
+        <>
+          Target unit price for 1 XLM in USD. Total output will settle for at
+          least{" "}
+          <span className="font-mono tnum text-ink-2">
+            {(numericAmount * numericTarget).toFixed(2)}
+          </span>{" "}
+          USDC on-chain.
+        </>
+      ) : (
+        <>
+          Total target amount to receive in USD value. Settles for at least{" "}
+          <span className="font-mono tnum text-ink-2">
+            {(numericTarget / REFERENCE_XLM_USD).toFixed(2)}
+          </span>{" "}
+          XLM on-chain, valuing XLM at {REFERENCE_XLM_USD} USD.
+        </>
+      )}
+    </span>
+  );
 
   const safeOrders = useMemo(
     () =>
