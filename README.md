@@ -1,9 +1,9 @@
 # LumaFlow ⚡
 
 > **Autonomous FX Hedging & Non-Custodial Order Settlement on Stellar**
-> Built for the Rise In × Stellar Pro Hackathon 2026.
+> Limit orders and oracle-triggered stop-loss. Built for the Rise In × Stellar Pro Hackathon 2026.
 
-**[▶ Live demo](https://lumaflovv.vercel.app)** · [Vault contract on Stellar Expert](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) · Stellar Testnet
+**[▶ Live demo](https://lumaflovv.vercel.app)** · [V2 limit vault](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) · [V3 stop vault](https://stellar.expert/explorer/testnet/contract/CD36555E46SJ5X6WD7H6RLOCWEOHAMQLOQY55CJ4G3KGD3TNQM243MBL) · Stellar Testnet
 
 ---
 
@@ -13,10 +13,22 @@ A freelancer in Istanbul invoices in USD and spends in lira. To protect a rate t
 have three bad options: watch the chart themselves, leave funds on a centralised
 exchange that can freeze the account, or hand keys to a custodial bot.
 
-LumaFlow gives them the fourth: a limit order that rests **on-chain**, priced in
-lira, executed by anyone, with collateral that never leaves a Soroban contract. Money
-enters and leaves through a Turkish bank transfer over SEP-6, so the user never has to
-think in stablecoins.
+LumaFlow gives them the fourth: an order that rests **on-chain**, priced in lira,
+executed by anyone, with collateral that never leaves a Soroban contract. Money enters and
+leaves through a Turkish bank transfer over SEP-6, so the user never has to think in
+stablecoins.
+
+Two instructions, two contracts, one console:
+
+| | **V2 — limit order** | **V3 — stop-loss** |
+| --- | --- | --- |
+| Sells when | the market is **good enough** to clear your floor | the **price feed falls through** your level |
+| Trigger source | none — any fill that meets the floor settles | Reflector SEP-40 oracle, read by the contract |
+| Guarantee | `min_user_out` reaches your wallet, after the bounty | same floor, same promise |
+| Direction | USDC ⇄ XLM | XLM → USDC |
+
+They are separate deployments on purpose. A stop order can never be settled through the
+limit path, and the console reads both.
 
 ---
 
@@ -25,7 +37,9 @@ think in stablecoins.
 | | Address / URL |
 | --- | --- |
 | **dApp** | <https://lumaflovv.vercel.app> |
-| **Vault contract** | [`CAVF2IT2…R4HWP2INT`](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) |
+| **V2 limit vault** | [`CAVF2IT2…R4HWP2INT`](https://stellar.expert/explorer/testnet/contract/CAVF2IT2KTOES576A2WNIIQVIBNHWVGMSIRE55XFJGB6WD3R4HWP2INT) |
+| **V3 stop vault** | [`CD36555E…NQM243MBL`](https://stellar.expert/explorer/testnet/contract/CD36555E46SJ5X6WD7H6RLOCWEOHAMQLOQY55CJ4G3KGD3TNQM243MBL) |
+| **Reflector oracle** (SEP-40) | [`CCYOZJCO…OYKOMJRN63`](https://stellar.expert/explorer/testnet/contract/CCYOZJCOPG34LLQQ7N24YXBM7LL62R7ONMZ3G6WZAAYPB5OYKOMJRN63) |
 | **USDC SAC** | [`CBIELTK6…HMXQDAMA`](https://stellar.expert/explorer/testnet/contract/CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA) |
 | **USDC issuer** | [`GBBD47IF…3ZLLFLA5`](https://stellar.expert/explorer/testnet/account/GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5) |
 | **Native XLM SAC** | [`CDLZFC3S…U2HHGCYSC`](https://stellar.expert/explorer/testnet/contract/CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC) |
@@ -39,10 +53,12 @@ think in stablecoins.
 > configuration change on our side, but it is gated on that provider's KYC requirements,
 > supported rails and commercial onboarding, not on a one-line edit.
 
-### Verified on-chain
+### Verified on-chain — V2 limit orders
 
 Every hash below is a real, successful Stellar Testnet transaction, read back from
-Soroban RPC and Horizon rather than from the UI.
+Soroban RPC and Horizon rather than from the UI. **Everything in this section is a
+completed live execution.** V3's evidence is separate, and weaker on purpose — see
+[V3 — oracle-triggered stop-loss](#v3--oracle-triggered-stop-loss).
 
 | Step | Transaction |
 | --- | --- |
@@ -184,6 +200,120 @@ Collateral left on that instance is still reclaimable through `cancel_order`.
 
 ---
 
+## V3 — oracle-triggered stop-loss
+
+A limit order sells when the market gets **good enough**. A stop-loss sells once the market
+has gone **bad** — the opposite instruction, and one a price floor cannot express, because a
+falling price makes a floor harder to meet, not easier. V3 adds the missing half: a trigger
+read from a price feed, kept strictly apart from the payout floor.
+
+### Two prices that never substitute for one another
+
+| | What it decides | Read from |
+| --- | --- | --- |
+| `stop_price` | whether selling is **permitted** | the Reflector oracle, at the feed's own scale |
+| `min_user_out` | whether a particular fill is **acceptable** | the vault's own balance delta |
+
+`min_user_out` is checked **after** the keeper bounty is taken, exactly as in V2: it is a
+promise about the number that lands in the owner's wallet, not about the swap output.
+
+### Lifecycle — and why the trigger is persistent
+
+```
+Armed ──trigger_stop──▶ Triggered ──execute_stop──▶ Executed
+  │                         │
+  └────── cancel_order ─────┴──▶ Cancelled   (full collateral returned)
+```
+
+`trigger_stop` records the fall and **moves no funds**. `execute_stop` attempts the sale, in
+a separate transaction. They are split deliberately: a combined call would roll the trigger
+back whenever the swap failed, so a fall that genuinely happened would be forgotten because
+liquidity was thin in the same ledger.
+
+Once recorded, the trigger is **permanent**. If the price recovers, the order stays sellable
+until the owner cancels it or the deadline passes. This is disclosed on the form and again
+in the signature summary, because it is the part of the design a user would not assume.
+
+### Triggering is not a sale
+
+**A triggered order can still refuse to settle, and that is the design working.** If the
+pool cannot deliver enough for `min_user_out` to survive the bounty, `execute_stop` reverts
+and the collateral stays the owner's. A stop that quietly accepts any price is not
+protection.
+
+This is not a corner case on testnet. Measured the same minute: the Reflector cross reads
+**0.1898527 USDC/XLM** while the Soroswap testnet pool quotes **0.1053589** — **1.80×**
+apart, because the testnet pool is synthetic and nobody arbitrages it. The trigger price and
+the fill price are two different numbers, and the interface shows them as two different
+numbers.
+
+No stop-loss product can promise a sale. A price gap, an oracle outage or a keeper outage
+can all leave a triggered order unfilled. What is promised is narrower and keepable: **you
+will not be sold below your minimum.**
+
+### Oracle policy — fixed at deployment, no setter
+
+Both legs are read against the same USD base and crossed in one multiplication, so the scale
+is applied once. Every field was read from the live feed before deployment, and none of them
+can be changed afterwards — V3 has no admin, no router setter, no oracle setter and no
+upgrade entry point.
+
+| Field | Value |
+| --- | --- |
+| `base` / `asset` / `quote` | `Other("USD")` / `Other("XLM")` / `Other("USDC")` |
+| `decimals` | 14 |
+| `max_age_secs` / `max_skew_secs` / `max_future_secs` | 900 / 60 / 0 |
+| `max_amount_in` | `100000000` — 10.0000000 XLM per order |
+
+`max_age_secs = 900` is a **testnet choice** derived from a 13-minute, three-publication
+sample against a 300-second feed cadence, not a validated safety bound. The oracle itself
+carries a live admin and an upgrade entry: a fixed vault address does not make its
+dependencies immutable. Detail: [`docs/ORACLE_DISCOVERY_TR.md`](docs/ORACLE_DISCOVERY_TR.md).
+
+### What is proven — and what is not
+
+**Deployed and verified on chain:**
+
+| Step | Transaction |
+| --- | --- |
+| **WASM upload** — `4ced7ccf…4377d8` | [`6c6fecf9…828e6`](https://stellar.expert/explorer/testnet/tx/6c6fecf9cc2a783faf5c56469b1dd72b60af1c5d314de11b037212dd8fa828e6) |
+| **Deploy + constructor** | [`da22a964…86f905`](https://stellar.expert/explorer/testnet/tx/da22a964c2c97399a40b1ab8b73200923e1b3d32c0e1411ec5c8a7671886f905) |
+
+The wasm was fetched back off the chain and is byte-identical to the local release build.
+`get_config` reads every constructor field back unchanged, and `current_price()` returns a
+live cross rate — a single read that exercises `decimals()`, `base()`, both `lastprice()`
+legs, the staleness and skew gates and the cross-rate arithmetic against the real feed.
+
+```bash
+cd contracts/stop_vault && cargo build --release --target wasm32-unknown-unknown
+shasum -a 256 target/wasm32-unknown-unknown/release/trigger_stop_vault.wasm
+stellar contract fetch --id CD36555E46SJ5X6WD7H6RLOCWEOHAMQLOQY55CJ4G3KGD3TNQM243MBL \
+  --network testnet --out-file onchain.wasm && shasum -a 256 onchain.wasm
+```
+
+**Tested:** 34 contract tests against three router doubles and a controlled oracle. Eight
+further cases were **simulated against the live contract** without writing to it — seven
+refusals (`OrderNotFound`, `StopNotBelowMarket`, `AmountTooLarge`, `TokenNotAllowed`,
+`InvalidFee`, `InvalidDeadline`) and the accepting path, which emitted the expected
+`("stop","created")` event. `get_order_count` was still `0` afterwards.
+
+**Not done, stated plainly:**
+
+- **No stop order exists on V3**, and **no real price fall has driven a trigger through to a
+  settlement.** V3 ships the instrument; it does not yet ship a live execution proof the way
+  V2 does above.
+- The keeper has only ever been run without a signing key, in read-only scan mode.
+- The stop form's behaviour with a wallet attached has not been exercised end to end.
+
+### Not built — do not read these as features
+
+**Commit–reveal** (sealed stop levels) and **OCO / bracket** (one take-profit and one stop
+sharing a single collateral) are designed in
+[`docs/STOP_LOSS_DESIGN_TR.md`](docs/STOP_LOSS_DESIGN_TR.md) and **are not implemented**.
+V3's stop level is public on chain, and one order carries exactly one trigger.
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -196,7 +326,7 @@ flowchart TD
         A3["anchor/sep6.ts<br/>Deposit / Withdraw Rails"]
         A4["anchor/sep38.ts<br/>Real-Time TRY Quotes"]
         A5["anchor/trustline.ts<br/>Classic changeTrust"]
-        UI["FX Ramp & Limit Order Interface"]
+        UI["FX Ramp · Limit & Stop-Loss Interface"]
     end
 
     subgraph AN["TR Anchor (SEP-1/6/10/12/38)"]
@@ -207,7 +337,9 @@ flowchart TD
     subgraph SN["Stellar Network (Testnet)"]
         USDC["USDC (Circle Testnet Issuer)"]
         SAC["USDC Stellar Asset Contract"]
-        V["LumaFlow Contract"]
+        V["V2 Limit Vault"]
+        V3["V3 Stop Vault"]
+        ORC["Reflector Oracle<br/>SEP-40 price feed"]
         DEX["Soroswap Router"]
     end
 
@@ -220,8 +352,12 @@ flowchart TD
     A3 -->|"Interactive / Poll"| AN
     USDC -->|"3. SAC Wrap"| SAC
     SAC -->|"4. create_order(USDC)"| V
-    K -->|"5. Trigger on target price"| V
+    UI -->|"4b. create_stop_order(XLM collateral)"| V3
+    K -->|"5. Settle when the floor is reachable"| V
+    ORC -->|"5b. lastprice → trigger_stop"| V3
+    K -->|"5c. execute_stop once Triggered"| V3
     V <-->|"6. Atomic swap with balance delta"| DEX
+    V3 <-->|"6b. Same delta-checked settlement"| DEX
     V -->|"7. Transfer net proceeds"| USDC
     USDC -->|"8. Payment with Memo.id"| TRZ
     TRZ -->|"9. Payout TRY to IBAN"| U
@@ -257,6 +393,19 @@ Other properties:
   sub-invocation, not a blanket approval.
 - **TTL managed.** Persistent entries target a ~120-day TTL, renewed under ~30 days.
 
+**V3 adds, on the same settlement core:**
+
+- **No admin, no setters, no upgrade.** Router, oracle, oracle policy, token pair and size
+  cap are fixed by the constructor. There is no entry point that moves any of them.
+- **The oracle is validated, not trusted blindly.** Scale, base, staleness, cross-leg skew
+  and future-dating are each a distinct error, so an unreadable feed can never look like a
+  feed saying the trigger was not met.
+- **The exit never depends on the feed.** `cancel_order` reads no price and calls no router:
+  an owner can always reclaim 100% of the collateral, including after the deadline and while
+  the oracle is down.
+- **A stop cannot be opened at or below the market.** `create_stop_order` refuses it rather
+  than escrowing collateral against an order that would trigger on its first reading.
+
 Full detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
 [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md).
 
@@ -280,8 +429,8 @@ Opens on <http://localhost:5173>. Requires [Freighter](https://freighter.app) se
 **Contract**
 
 ```bash
-cd contracts/vault
-cargo test                                              # 17 tests
+cd contracts/vault      && cargo test    # 17 tests — V2 limit vault
+cd contracts/stop_vault && cargo test    # 34 tests — V3 stop vault
 cargo build --release --target wasm32-unknown-unknown   # deployable wasm
 ```
 
@@ -291,13 +440,19 @@ cargo build --release --target wasm32-unknown-unknown   # deployable wasm
 cd keeper && npm install && npm start
 ```
 
+`RPC_URL` and `VAULT_CONTRACT_ID` are required. `STOP_VAULT_CONTRACT_ID` is optional — set
+it and the keeper also scans V3, triggering armed orders when the contract's own price
+reaches their level and handing triggered orders to simulation, which refuses the ones the
+pool cannot fill. Without `KEEPER_SECRET_KEY` it runs read-only and sends nothing.
+
 Deployment and invocation commands: [`docs/TESTNET_RUNBOOK.md`](docs/TESTNET_RUNBOOK.md).
 
 ### Environment
 
 | Variable | Purpose |
 | --- | --- |
-| `VITE_VAULT_CONTRACT_ID` | Deployed LumaFlow contract |
+| `VITE_VAULT_CONTRACT_ID` | V2 limit vault |
+| `VITE_STOP_VAULT_CONTRACT_ID` | V3 stop vault — **optional**; unset means the console offers limit orders only, with no stop form |
 | `VITE_RPC_URL` | Soroban RPC endpoint |
 | `VITE_HORIZON_URL` | Horizon, for classic balances and trustlines |
 | `VITE_ANCHOR_HOME_DOMAIN` | SEP-1 discovery root for the TRY anchor |
@@ -305,7 +460,8 @@ Deployment and invocation commands: [`docs/TESTNET_RUNBOOK.md`](docs/TESTNET_RUN
 | `VITE_TOKEN_OUT_CONTRACT_ID` | Default target asset |
 
 All values ship in [`frontend/.env.example`](frontend/.env.example); nothing is hardcoded
-past the anchor's home domain.
+past the anchor's home domain. There is deliberately no fallback constant for the stop
+vault: a stop form addressed to a contract that does not exist is worse than no stop form.
 
 ---
 
@@ -319,7 +475,7 @@ Cited by path, as the handbook requires.
 | `skills/standards/SKILL.md` — [`stellar/stellar-dev-skill`](https://github.com/stellar/stellar-dev-skill) | SEP-1 discovery (`toml.ts`), SEP-10 JWT (`sep10.ts`), SEP-38 quotes (`sep38.ts`) |
 | `skills/assets/SKILL.md` | `changeTrust` trustline setup and the classic → SAC bridge (`trustline.ts`, `stellar.ts`) |
 | `skills/dapp/SKILL.md` | Freighter connection, network guard and transaction signing (`frontend/src/App.tsx`) |
-| `skills/smart-contracts/SKILL.md` | Soroban storage, TTL management and auth in `contracts/vault/src` |
+| `skills/smart-contracts/SKILL.md` | Soroban storage, TTL management and auth in `contracts/vault/src` and `contracts/stop_vault/src` |
 
 Index: <https://skills.stellar.org/>
 
@@ -328,10 +484,11 @@ Index: <https://skills.stellar.org/>
 ## Repository map
 
 ```
-contracts/vault/   Soroban limit-order vault (Rust, no_std) + 17 tests
-frontend/          React 19 + Vite dApp; anchor/ holds the SEP client
-keeper/            Executor bot that settles orders when the rate is reachable
-docs/              Architecture, spec, anchor integration, testnet runbook
+contracts/vault/      V2 limit-order vault (Rust, no_std) + 17 tests
+contracts/stop_vault/ V3 oracle-gated stop-sell vault + 34 tests
+frontend/             React 19 + Vite dApp; anchor/ holds the SEP client
+keeper/               Executor bot: settles limit orders, triggers and settles stops
+docs/                 Architecture, spec, anchor integration, oracle discovery, runbook
 ```
 
 ---
@@ -351,6 +508,9 @@ dollar exposure without touching a custodial exchange.**
 - Move the keeper from manual trigger to a supervised always-on executor with
   retry, nonce management and alerting.
 - Close the remaining testnet gaps: SEP-12 KYC fields and anchor-side fee disclosure.
+- **Prove V3 end to end**: a real oracle fall driving `trigger_stop` and `execute_stop` on
+  chain, against a pool whose price tracks the feed.
+- Re-derive `max_age_secs` from a multi-day sample rather than the 13-minute testnet one.
 
 ### Q1 2027 — Audit and mainnet
 
@@ -358,6 +518,7 @@ dollar exposure without touching a custodial exchange.**
   settlement path, authorization tree and TTL lifecycle.
 - Mainnet deployment behind a conservative per-order cap, lifted on audit sign-off.
 - Public keeper market: open bounty discovery so execution is not dependent on us.
+- **Commit–reveal stop levels** and **OCO / bracket orders** — designed, not built.
 
 ### Q2 2027 — Distribution
 
@@ -379,6 +540,9 @@ user never had to watch.
 | --- | --- |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System flow and storage model |
 | [`docs/SPECIFICATION.md`](docs/SPECIFICATION.md) | Entrypoints, data structures, slippage and TTL semantics |
+| [`docs/STOP_LOSS_DESIGN_TR.md`](docs/STOP_LOSS_DESIGN_TR.md) | Stop-loss semantics, threat model, and the unbuilt commit–reveal / OCO designs |
+| [`docs/ORACLE_DISCOVERY_TR.md`](docs/ORACLE_DISCOVERY_TR.md) | Live oracle measurements behind the V3 policy |
+| [`docs/V3_DEPLOY_MANIFEST_TR.md`](docs/V3_DEPLOY_MANIFEST_TR.md) | V3 deploy parameters, fees and on-chain verification |
 | [`docs/ANCHOR_INTEGRATION.md`](docs/ANCHOR_INTEGRATION.md) | SEP-1/6/10/12/38 integration in depth |
 | [`docs/TESTNET_RUNBOOK.md`](docs/TESTNET_RUNBOOK.md) | Deploy, initialise and invoke on testnet |
 | [`docs/PITCH_AND_DEFENSE.md`](docs/PITCH_AND_DEFENSE.md) | Problem framing and jury Q&A |
@@ -390,3 +554,7 @@ user never had to watch.
 ## Licence & status
 
 Stellar **Testnet** only. No mainnet value is at risk. Not audited — see the roadmap.
+
+V2 limit orders are proven by completed live executions. V3 stop-loss is **deployed to
+testnet and its automated tests pass; no end-to-end execution has been driven by a real
+price fall.**
