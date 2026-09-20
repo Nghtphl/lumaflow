@@ -32,6 +32,7 @@ import {
   BASE_FEE,
   Contract,
   Networks,
+  StrKey,
   TransactionBuilder,
   nativeToScVal,
   rpc,
@@ -259,6 +260,54 @@ async function simulateReadOn<T>(
   }
   return scValToNative(simulation.result.retval) as T;
 }
+
+/**
+ * The order id the vault announced *in this transaction*, or null.
+ *
+ * `create_order` returns the id, but this RPC's `getTransaction` exposes no
+ * decoded return value and the SDK pinned here cannot read a protocol-23
+ * `TransactionMeta`. The contract's own `order`/`created` event carries it, and
+ * an event is bound to the transaction that emitted it — which the newest order
+ * in the vault is not: two orders placed on the same terms seconds apart are
+ * indistinguishable that way, and that is exactly how orders 2 and 3 came to
+ * exist on this deployment.
+ *
+ * Anything unrecognised — an RPC that omits the events, a shape this does not
+ * know — returns null, and the order is reported without a number rather than
+ * with a guessed one.
+ */
+const createdOrderIdFrom = (
+  result: RawTransactionStatus,
+  vaultId: string,
+): number | null => {
+  const perOperation = (
+    result.events as { contractEventsXdr?: unknown } | undefined
+  )?.contractEventsXdr;
+  if (!Array.isArray(perOperation)) return null;
+
+  for (const operation of perOperation) {
+    if (!Array.isArray(operation)) continue;
+    for (const encoded of operation) {
+      if (typeof encoded !== "string") continue;
+      try {
+        const event = xdr.ContractEvent.fromXDR(encoded, "base64");
+        const contractId = event.contractId();
+        if (!contractId || StrKey.encodeContract(contractId) !== vaultId) {
+          continue;
+        }
+        const body = event.body().v0();
+        const topics = body.topics().map((topic) => scValToNative(topic));
+        if (topics[0] !== "order" || topics[1] !== "created") continue;
+        const data = scValToNative(body.data()) as unknown;
+        const id = Array.isArray(data) ? Number(data[0]) : NaN;
+        return Number.isSafeInteger(id) && id > 0 ? id : null;
+      } catch {
+        // An event this build cannot decode is not a failure: keep looking.
+      }
+    }
+  }
+  return null;
+};
 
 interface RawTransactionStatus {
   status: string;
@@ -978,7 +1027,7 @@ function App() {
     contractId: string,
     method: string,
     args: xdr.ScVal[],
-  ): Promise<string> => {
+  ): Promise<{ hash: string; result: RawTransactionStatus }> => {
     setLifecycle("running");
     setLifecycleStep(0);
     await assertFreighterTestnet();
@@ -1032,7 +1081,9 @@ function App() {
     if (result.status !== "SUCCESS") {
       throw new Error(`Transaction failed: ${submission.hash}`);
     }
-    return submission.hash;
+    // The confirmed result travels with the hash: it carries the contract's own
+    // events, which is where a caller reads what the call decided.
+    return { hash: submission.hash, result };
   };
 
   const submitOrder = async (event: React.FormEvent): Promise<void> => {
@@ -1087,7 +1138,7 @@ function App() {
 
     operationLock.current = true;
     try {
-      const hash = await submitContractOperation(ACTIVE_VAULT.id, "create_order", [
+      const { hash, result } = await submitContractOperation(ACTIVE_VAULT.id, "create_order", [
         Address.fromString(walletAddress).toScVal(),
         Address.fromString(tokenIn).toScVal(),
         Address.fromString(tokenOut).toScVal(),
@@ -1096,14 +1147,30 @@ function App() {
         xdr.ScVal.scvU32(numericFeeBps),
       ]);
       setLifecycle("complete");
+      const createdId = createdOrderIdFrom(result, ACTIVE_VAULT.id);
       await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
+      // Clear the whole trigger, not just the two derived fields. Leaving the
+      // target price behind left the form looking half-filled and ready, which
+      // is one keystroke away from placing the same order twice.
       setAmountIn("");
       setMinAmountOut("");
-      setMessage(`Order confirmed on ledger: ${hash}`);
+      setTargetValue("");
+      // The number is how the order is addressed from here on — in the queue
+      // below, and in the cancel or execute that closes it. Ids restart at 1 in
+      // every deployment, so it is never shown without the vault it belongs to.
+      const orderLabel =
+        createdId === null
+          ? "Your order"
+          : `Order ${ACTIVE_VAULT.label}·#${createdId}`;
+      setMessage(`${orderLabel} confirmed on ledger: ${hash}`);
       showNotice(
         "success",
-        "Order successfully created on-chain!",
-        "Transaction confirmed on the Testnet ledger.",
+        createdId === null
+          ? "Order created on-chain"
+          : `${orderLabel} created on-chain`,
+        createdId === null
+          ? "Confirmed on the Testnet ledger. Its number is in the queue below."
+          : "Confirmed on the Testnet ledger — find it in the queue below.",
         hash,
       );
     } catch (error) {
@@ -1148,7 +1215,7 @@ function App() {
     const reclaimed = order.amountIn;
     const reclaimedSymbol = tokenSymbolFromContract(order.tokenIn);
     try {
-      const hash = await submitContractOperation(order.vaultId, "cancel_order", [
+      const { hash } = await submitContractOperation(order.vaultId, "cancel_order", [
         xdr.ScVal.scvU32(id),
       ]);
       await Promise.all([fetchOrders(), refreshBalances(walletAddress)]);
@@ -1201,7 +1268,7 @@ function App() {
     setMessage("");
     const id = order.id;
     try {
-      const hash = await submitContractOperation(order.vaultId, "execute_order", [
+      const { hash } = await submitContractOperation(order.vaultId, "execute_order", [
         xdr.ScVal.scvU32(id),
         Address.fromString(walletAddress).toScVal(),
       ]);

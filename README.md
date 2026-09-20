@@ -96,9 +96,11 @@ button and the **Cancel** button — by a Freighter wallet, `GAJGMHHG…OSSLR`. 
 | `CAVF2IT2…WP2INT:3` | **`cancel_order`** — 10.0000000 XLM returned | [`e395ebd3…ae5aa8`](https://stellar.expert/explorer/testnet/tx/e395ebd34d8236b11b8db50dc96f1304dae9ccb8c5601a6c1ef17ca0e1ae5aa8) |
 
 Order ids are written `contractId:orderId` because ids restart at 1 in every deployment —
-`#2` names three different orders across V0, V1 and V2. Order `#3` was a duplicate of `#2`:
-the form was submitted a second time, 45 seconds later, at the next account sequence
-number. Rather than leave it resting, it became the cancellation test.
+`#2` names three different orders across V0, V1 and V2. Order `#3` carries the same terms
+as `#2` and was created 45 seconds later, at the next account sequence number — so the
+second transaction was built after the first had already been confirmed, not alongside it.
+What prompted that second submission was not established. Rather than leave it resting, it
+became the cancellation test.
 
 **`2d876f45…` — execute, decoded from its contract events:**
 
