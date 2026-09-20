@@ -36,6 +36,36 @@ think in stablecoins.
 > real testnet transaction. The client is written against the published SEPs and is
 > portable to a production anchor by changing one home domain.
 
+### Verified on-chain
+
+Every hash below is a real, successful Stellar Testnet transaction against the deployed
+contract — read back from Soroban RPC events and Horizon, not from the UI.
+
+| Step | Transaction |
+| --- | --- |
+| **SEP-6 deposit** — anchor pays out 61.1895780 USDC | [`65434cdf…411d66`](https://stellar.expert/explorer/testnet/tx/65434cdf31f19aa23d6408da4c3b6bf32587f3a169fadfa4088e44bbdb411d66) |
+| **`create_order`** — order #10 locks collateral in the vault | [`1352efc1…68ec5a`](https://stellar.expert/explorer/testnet/tx/1352efc105fbdbc48b2ff2c739af941473f36b0382ab48ba27e9e9e06868ec5a) |
+| **`cancel_order`** — order #5 refunded in full | [`a16bf08b…a39909`](https://stellar.expert/explorer/testnet/tx/a16bf08ba88b093c15a4ce7a424bf427cf6dd597467729d60e419321baa39909) |
+| **`execute_order`** | ⚠️ Not yet executed on testnet — see below |
+
+To date the contract has taken **16 invocations with 0 errors**: 10 `create_order` and
+4 `cancel_order`. Settlement has not yet run on-chain.
+
+> **Known issue — settlement is not wired on this deployment.** The vault was initialised
+> with the deployer's own account (`GBICM7WA…`) in the router slot instead of the Soroswap
+> router contract, so `execute_order` reverts when it tries to move collateral to something
+> that is not a pool. The router itself is live and the USDC/XLM pool exists
+> (`CCBX3NZT…GHEH7RQS`); the fix is one admin call:
+>
+> ```bash
+> stellar contract invoke --id CDERIBD7XORORRYYOZDM44EOJIHJWZGEBE7WTAMHJMYGWI33UKGYQMPB \
+>   --source <admin> --network testnet \
+>   -- set_router --router CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD
+> ```
+>
+> Contract logic is covered by 11 passing tests including the settlement path; this is a
+> deployment configuration gap, not a contract bug.
+
 ---
 
 ## Architecture

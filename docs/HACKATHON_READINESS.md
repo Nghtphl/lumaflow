@@ -161,8 +161,8 @@ demo URL, known limitations, and the **Stellar Skills used, cited by path**.
 - [x] Public GitHub repo + well-structured README
 - [x] Contract IDs documented (vault / USDC SAC / router) with explorer links
 - [x] Live demo URL, reachable from a stranger's laptop
-- [ ] Anchor flow demonstrable end-to-end with real tx hashes — *needs a signed run from a funded Freighter account; paste the hashes into the README's live-deployment table*
-- [ ] One real `execute_order` transaction on testnet — *same: requires a wallet signature, cannot be produced from the repo alone*
+- [x] Anchor flow demonstrable end-to-end with real tx hashes — *SEP-6 deposit, create_order and cancel_order verified in the README*
+- [ ] One real `execute_order` transaction on testnet — **blocked**: the vault's router slot holds an account, not the Soroswap router. Run `set_router` as admin, then execute once. See the README's known-issue note.
 - [x] Mermaid architecture diagram in the README/docs
 - [x] Stellar Skills cited **by path**
 - [x] `cargo test` green; `cargo build --release --target wasm32-unknown-unknown` clean
